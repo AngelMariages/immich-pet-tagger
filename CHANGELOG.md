@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.5.2
+
+### Features
+- **Selectable CLIP and YOLO models**: `CLIP_MODEL_NAME`/`CLIP_PRETRAINED` and `YOLO_MODEL_NAME` env vars let you trade accuracy for speed/memory (e.g. a larger CLIP backbone, or a bigger YOLO model for better detection). Embedding caches are namespaced per model combo so switching never mixes stale data from a previous model.
+- Manual scan's "Until" date now defaults to today, replacing the old "From" default (the poller's last-run timestamp), matching the common "scan the last N days" workflow.
+
+### Fixes
+- **Manual scan no longer corrupts the background poller's progress**: manual scans and the automatic poller used to share one cursor timestamp file but interpreted it differently (EXIF taken-date vs upload time). Resetting the date for a manual scan could silently rewind the poller's cursor too, causing it to pick up far more assets than expected on bulk-imported libraries. Manual scan now uses its own date range and never touches the poller's cursor.
+
 ## v1.5.1
 
 ### Fixes
