@@ -22,6 +22,7 @@ Uses CLIP embeddings and a few reference photos you provide. No cloud services, 
 - **Negative samples**: mark photos that look like your pet but aren't, to sharpen the classifier's ability to reject false positives.
 - **Date ranges**: restrict a pet to photos taken within a specific period (useful for pets that have passed away or were adopted later).
 - **Scan controls**: set the scan start date and trigger a scan from the sidebar; the last scan stats are shown live.
+- **Manage pets**: rename a pet, remove it from Pet Tagger only (keeps it and its tags in Immich untouched, so you can re-import later), delete it entirely (also removes the person and all its tags from Immich), or reset its Immich tags (untags every photo but keeps your curated reference photos so you can start tagging fresh).
 
 ## Requirements
 
