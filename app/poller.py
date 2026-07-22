@@ -90,7 +90,7 @@ def migrate_ref_bboxes(data_dir: Path) -> None:
 # Main poll cycle
 # ---------------------------------------------------------------------------
 
-def run_poll_cycle(data_dir: str, on_date=None, cancel=None, low_conf_out=None, live_counts: dict | None = None, manual: bool = False, scan_until: str | None = None) -> None:
+def run_poll_cycle(data_dir: str, on_date=None, cancel=None, low_conf_out=None, live_counts: dict | None = None, manual: bool = False, scan_until: str | None = None, scan_since: str | None = None) -> None:
     log.info(f"Poll cycle | threshold={THRESHOLD} manual={manual}")
     dd = Path(data_dir)
     now = datetime.now(timezone.utc).isoformat()
@@ -100,7 +100,7 @@ def run_poll_cycle(data_dir: str, on_date=None, cancel=None, low_conf_out=None, 
     for k in ("added", "low_confidence", "unknown", "out_of_range", "already_tagged", "failed", "no_thumb"):
         counts[k] = 0
     try:
-        _run_poll_cycle(dd, counts, on_date, cancel, low_conf_out, manual, scan_until)
+        _run_poll_cycle(dd, counts, on_date, cancel, low_conf_out, manual, scan_until, scan_since)
     except Exception as e:
         data.write_poll_status(dd, {"status": "error", "ran_at": datetime.now(timezone.utc).isoformat(), "error": str(e), "counts": counts})
         raise
@@ -108,7 +108,7 @@ def run_poll_cycle(data_dir: str, on_date=None, cancel=None, low_conf_out=None, 
         data.write_poll_status(dd, {"status": "idle", "ran_at": datetime.now(timezone.utc).isoformat(), "counts": counts})
 
 
-def _run_poll_cycle(dd: Path, counts: dict, on_date=None, cancel=None, low_conf_out=None, manual: bool = False, scan_until: str | None = None) -> None:
+def _run_poll_cycle(dd: Path, counts: dict, on_date=None, cancel=None, low_conf_out=None, manual: bool = False, scan_until: str | None = None, scan_since: str | None = None) -> None:
     config = data.load_config(dd)
     if not config:
         log.warning("config.json empty or missing, no pets configured yet.")
@@ -138,7 +138,7 @@ def _run_poll_cycle(dd: Path, counts: dict, on_date=None, cancel=None, low_conf_
         return
     names, clf, scaler = result
 
-    last_ts = data.load_last_timestamp(dd)
+    last_ts = scan_since if manual else data.load_last_timestamp(dd)
     log.info(f"Fetching assets taken after: {last_ts}")
 
     t0 = time.time()

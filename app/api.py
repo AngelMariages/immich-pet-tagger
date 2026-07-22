@@ -871,35 +871,22 @@ async def import_pet(body: PetImport):
     return {"name": name, "person_id": body.person_id, "ref_count": len(assets)}
 
 
-class TimestampBody(BaseModel):
-    date: str
-
-
-@router.post("/timestamp")
-async def set_timestamp(body: TimestampBody):
-    import re
-    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", body.date):
-        raise HTTPException(status_code=400, detail="Date must be YYYY-MM-DD")
-    ts = body.date + "T00:00:00.000Z"
-    now = datetime.now(timezone.utc).isoformat()
-    ts = min(ts, now)
-    data.save_last_timestamp(ts, DATA_DIR)
-    log.info(f"Scan timestamp reset to {ts}")
-    return {"timestamp": ts}
-
-
 class ScanRequest(BaseModel):
+    scan_since: str
     scan_until: Optional[str] = None
 
 
 @router.post("/scan")
-async def trigger_scan(body: ScanRequest = ScanRequest()):
+async def trigger_scan(body: ScanRequest):
+    import re
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", body.scan_since):
+        raise HTTPException(status_code=400, detail="scan_since must be YYYY-MM-DD")
     _require_inference()
     import state
     if state.scan_lock is not None and state.scan_lock.locked():
         state.scan_cancel.set()
     state.scan_generation += 1
-    asyncio.create_task(_run_manual_scan(state.scan_generation, body.scan_until))
+    asyncio.create_task(_run_manual_scan(state.scan_generation, body.scan_since, body.scan_until))
     return {"status": "started"}
 
 
@@ -913,13 +900,14 @@ async def stop_scan():
     return {"status": "stopped"}
 
 
-async def _run_manual_scan(generation: int, scan_until: str | None = None):
+async def _run_manual_scan(generation: int, scan_since: str, scan_until: str | None = None):
     import state
     from poller import run_poll_cycle
     live_counts: dict = {}
     state.manual_scan_result = {"status": "running", "started_at": datetime.now(timezone.utc).isoformat(), "counts": live_counts}
     state.scan_low_conf_assets = []
     low_conf_assets: list = []
+    scan_since_iso = scan_since + "T00:00:00.000Z"
 
     def on_date(date_str):
         if isinstance(state.manual_scan_result, dict):
@@ -930,7 +918,7 @@ async def _run_manual_scan(generation: int, scan_until: str | None = None):
             if state.scan_generation != generation:
                 return
             state.scan_cancel.clear()
-            await asyncio.to_thread(run_poll_cycle, DATA_DIR, on_date, state.scan_cancel, low_conf_assets, live_counts, True, scan_until)
+            await asyncio.to_thread(run_poll_cycle, DATA_DIR, on_date, state.scan_cancel, low_conf_assets, live_counts, True, scan_until, scan_since_iso)
             if state.scan_generation == generation:
                 state.scan_low_conf_assets = low_conf_assets
                 state.manual_scan_result = data.load_poll_status(DATA_DIR)

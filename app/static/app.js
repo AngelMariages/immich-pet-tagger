@@ -712,8 +712,7 @@ async function applyTimestamp() {
   if (!val) { toast('Pick a date first', 'error'); return; }
   const untilVal = document.getElementById('scanUntil').value || null;
   try {
-    await api('/api/timestamp', { method: 'POST', body: { date: val } });
-    await api('/api/scan', { method: 'POST', body: { scan_until: untilVal } });
+    await api('/api/scan', { method: 'POST', body: { scan_since: val, scan_until: untilVal } });
     showScanResult({ status: 'running' });
     const iv = setInterval(async () => {
       try {
