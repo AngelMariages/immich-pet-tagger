@@ -29,6 +29,7 @@ CLIP_MODEL_NAME = os.environ.get("CLIP_MODEL_NAME", "ViT-B-16")
 CLIP_PRETRAINED = os.environ.get("CLIP_PRETRAINED", "openai")
 _DEFAULT_CLIP_MODEL_NAME = "ViT-B-16"
 _DEFAULT_CLIP_PRETRAINED = "openai"
+_DEFAULT_YOLO_MODEL_NAME = "yolov8n.pt"
 
 MAX_EMBED_CACHE_SIZE = int(os.environ.get("EMBED_CACHE_SIZE", 5000))
 _embed_cache: OrderedDict[str, list[np.ndarray]] = OrderedDict()
@@ -277,12 +278,20 @@ def embed_crop_by_bbox(asset_id: str, bbox: list) -> np.ndarray | None:
 
 
 def _cache_suffix() -> str:
-    """Cache files are namespaced by model so switching CLIP_MODEL_NAME/CLIP_PRETRAINED
-    can't silently mix embeddings from different vector spaces. The default model keeps
-    the original unsuffixed filenames so existing installs don't lose their cache."""
-    if CLIP_MODEL_NAME == _DEFAULT_CLIP_MODEL_NAME and CLIP_PRETRAINED == _DEFAULT_CLIP_PRETRAINED:
+    """Cache files are namespaced by model so switching CLIP_MODEL_NAME/CLIP_PRETRAINED or
+    YOLO_MODEL_NAME can't silently mix embeddings or crop boxes from different vector spaces
+    or detectors. embeddings.pkl and crops.db both store crops of whatever YOLO detects, then
+    CLIP-embeds them, so both models are part of the cache key. The default combo keeps the
+    original unsuffixed filenames so existing installs don't lose their cache."""
+    import detector as _det
+    if (
+        CLIP_MODEL_NAME == _DEFAULT_CLIP_MODEL_NAME
+        and CLIP_PRETRAINED == _DEFAULT_CLIP_PRETRAINED
+        and _det.YOLO_MODEL_NAME == _DEFAULT_YOLO_MODEL_NAME
+    ):
         return ""
-    safe = re.sub(r"[^A-Za-z0-9]+", "_", f"{CLIP_MODEL_NAME}_{CLIP_PRETRAINED}").strip("_")[:80]
+    raw = f"{CLIP_MODEL_NAME}_{CLIP_PRETRAINED}_{_det.YOLO_MODEL_NAME}"
+    safe = re.sub(r"[^A-Za-z0-9]+", "_", raw).strip("_")[:80]
     return f"_{safe}"
 
 
