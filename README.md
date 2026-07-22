@@ -10,8 +10,9 @@ Uses CLIP embeddings and a few reference photos you provide. No cloud services, 
 
 1. You enroll your pets via a web UI: provide a few reference photos and a short description
 2. A logistic regression classifier is trained locally on CLIP embeddings of those references
-3. Every 5 minutes, new photos are classified and matching pets are tagged in Immich
-4. Pets appear in Immich's People section just like humans
+3. Every 5 minutes, new photos are scanned: YOLO detects and crops any animals in the photo, then each crop is embedded with CLIP and classified against your pets
+4. Matching pets are tagged in Immich
+5. Pets appear in Immich's People section just like humans
 
 ## Features
 
