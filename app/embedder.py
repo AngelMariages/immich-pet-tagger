@@ -5,6 +5,7 @@ import logging
 import os
 import pickle
 import queue
+import re
 import sqlite3
 import threading
 from collections import OrderedDict
@@ -24,8 +25,10 @@ GPU_WORKERS = int(os.environ.get("GPU_WORKERS", 2))
 _default_scan_workers = GPU_WORKERS * 32 if torch.cuda.is_available() else 8
 SCAN_WORKERS = int(os.environ.get("SCAN_WORKERS", _default_scan_workers))
 CLIP_BATCH_SIZE = int(os.environ.get("CLIP_BATCH_SIZE", 32))
-CLIP_MODEL_NAME = "ViT-B-16"
-CLIP_PRETRAINED = "openai"
+CLIP_MODEL_NAME = os.environ.get("CLIP_MODEL_NAME", "ViT-B-16")
+CLIP_PRETRAINED = os.environ.get("CLIP_PRETRAINED", "openai")
+_DEFAULT_CLIP_MODEL_NAME = "ViT-B-16"
+_DEFAULT_CLIP_PRETRAINED = "openai"
 
 MAX_EMBED_CACHE_SIZE = int(os.environ.get("EMBED_CACHE_SIZE", 5000))
 _embed_cache: OrderedDict[str, list[np.ndarray]] = OrderedDict()
@@ -273,9 +276,20 @@ def embed_crop_by_bbox(asset_id: str, bbox: list) -> np.ndarray | None:
     return embed_image(crop_img)
 
 
+def _cache_suffix() -> str:
+    """Cache files are namespaced by model so switching CLIP_MODEL_NAME/CLIP_PRETRAINED
+    can't silently mix embeddings from different vector spaces. The default model keeps
+    the original unsuffixed filenames so existing installs don't lose their cache."""
+    if CLIP_MODEL_NAME == _DEFAULT_CLIP_MODEL_NAME and CLIP_PRETRAINED == _DEFAULT_CLIP_PRETRAINED:
+        return ""
+    safe = re.sub(r"[^A-Za-z0-9]+", "_", f"{CLIP_MODEL_NAME}_{CLIP_PRETRAINED}").strip("_")[:80]
+    return f"_{safe}"
+
+
 def load_embed_cache(data_dir: Path) -> None:
     global _cache_path, _crops_db
-    _cache_path = data_dir / "embeddings.pkl"
+    suffix = _cache_suffix()
+    _cache_path = data_dir / f"embeddings{suffix}.pkl"
     if _cache_path.exists():
         try:
             with open(_cache_path, "rb") as f:
@@ -288,14 +302,15 @@ def load_embed_cache(data_dir: Path) -> None:
         except Exception as e:
             log.warning(f"Could not load embedding cache: {e}")
 
+    crops_db_path = data_dir / f"crops{suffix}.db"
     try:
-        _crops_db = sqlite3.connect(data_dir / "crops.db", check_same_thread=False)
+        _crops_db = sqlite3.connect(crops_db_path, check_same_thread=False)
         _crops_db.execute("PRAGMA journal_mode=WAL")
         _crops_db.execute("PRAGMA synchronous=NORMAL")
         _crops_db.execute("CREATE TABLE IF NOT EXISTS crops (asset_id TEXT PRIMARY KEY, data BLOB NOT NULL)")
         _crops_db.commit()
         count = _crops_db.execute("SELECT COUNT(*) FROM crops").fetchone()[0]
-        log.info(f"Crop cache ready: {count} assets in crops.db")
+        log.info(f"Crop cache ready: {count} assets in {crops_db_path}")
     except Exception as e:
         log.warning(f"Could not open crops cache db: {e}")
         _crops_db = None
