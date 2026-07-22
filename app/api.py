@@ -793,13 +793,6 @@ async def get_poll_status():
     return data.load_poll_status(DATA_DIR)
 
 
-@router.get("/timestamp")
-async def get_timestamp():
-    path = DATA_DIR / "last_scan_timestamp.txt"
-    val = path.read_text(encoding="utf-8").strip() if path.exists() else ""
-    return {"timestamp": val}
-
-
 class PetImport(BaseModel):
     person_id: str
     name: str

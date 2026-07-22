@@ -587,11 +587,9 @@ function relativeTime(iso) {
 // Scan timestamp
 // ---------------------------------------------------------------------------
 
-async function loadTimestamp() {
-  try {
-    const d = await api('/api/timestamp');
-    if (d.timestamp) document.getElementById('scanDate').value = d.timestamp.slice(0, 10);
-  } catch(e) {}
+function prefillScanUntil() {
+  const el = document.getElementById('scanUntil');
+  if (!el.value) el.value = new Date().toISOString().slice(0, 10);
 }
 
 async function loadScanResult() {
@@ -954,7 +952,7 @@ document.getElementById('importDetailModal').addEventListener('click', function(
 (async () => {
   await refreshState();
   if (!activePet && pets.length > 0) showGuide();
-  loadTimestamp();
+  prefillScanUntil();
   loadScanResult();
   api('/api/version').then(async d => {
     const el = document.getElementById('versionLabel');
