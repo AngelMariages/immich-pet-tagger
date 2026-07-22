@@ -587,11 +587,9 @@ function relativeTime(iso) {
 // Scan timestamp
 // ---------------------------------------------------------------------------
 
-async function loadTimestamp() {
-  try {
-    const d = await api('/api/timestamp');
-    if (d.timestamp) document.getElementById('scanDate').value = d.timestamp.slice(0, 10);
-  } catch(e) {}
+function prefillScanUntil() {
+  const el = document.getElementById('scanUntil');
+  if (!el.value) el.value = new Date().toISOString().slice(0, 10);
 }
 
 async function loadScanResult() {
@@ -712,8 +710,7 @@ async function applyTimestamp() {
   if (!val) { toast('Pick a date first', 'error'); return; }
   const untilVal = document.getElementById('scanUntil').value || null;
   try {
-    await api('/api/timestamp', { method: 'POST', body: { date: val } });
-    await api('/api/scan', { method: 'POST', body: { scan_until: untilVal } });
+    await api('/api/scan', { method: 'POST', body: { scan_since: val, scan_until: untilVal } });
     showScanResult({ status: 'running' });
     const iv = setInterval(async () => {
       try {
@@ -955,7 +952,7 @@ document.getElementById('importDetailModal').addEventListener('click', function(
 (async () => {
   await refreshState();
   if (!activePet && pets.length > 0) showGuide();
-  loadTimestamp();
+  prefillScanUntil();
   loadScanResult();
   api('/api/version').then(async d => {
     const el = document.getElementById('versionLabel');

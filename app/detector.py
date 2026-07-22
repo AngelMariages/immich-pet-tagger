@@ -16,6 +16,7 @@ log = logging.getLogger("detector")
 YOLO_BATCH_SIZE = int(os.environ.get("YOLO_BATCH_SIZE", 32))
 YOLO_WORKERS = int(os.environ.get("GPU_WORKERS", 2))
 YOLO_INPUT_SIZE = int(os.environ.get("YOLO_INPUT_SIZE", 640))
+YOLO_MODEL_NAME = os.environ.get("YOLO_MODEL_NAME", "yolov8n.pt")
 
 ANIMAL_CLASS_IDS = {
     14,  # bird
@@ -67,7 +68,7 @@ def _yolo_batch_loop(worker_id: int) -> None:
     device = "cuda" if torch.cuda.is_available() else "cpu"
     log.info(f"YOLO worker {worker_id} loading on {device}...")
     try:
-        model = YOLO("yolov8n.pt")
+        model = YOLO(YOLO_MODEL_NAME)
         model.to(device)
     except Exception as e:
         _yolo_load_error = str(e)
