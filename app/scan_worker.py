@@ -83,4 +83,12 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    code = main()
+    # PyTorch/CUDA can abort (SIGABRT) during normal interpreter shutdown while
+    # tearing down CUDA context/stream threads. This process's only job was to
+    # run once and exit, so skip that teardown entirely: os._exit() drops
+    # straight to the OS syscall, no atexit handlers, no destructors, nothing
+    # left for the CUDA runtime to race against.
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(code)
