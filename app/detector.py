@@ -40,7 +40,9 @@ class _YoloReq:
         self.result: list | None = None
 
 
-_yolo_queue: queue.Queue[_YoloReq] = queue.Queue()
+_YOLO_STOP = object()
+
+_yolo_queue: queue.Queue = queue.Queue()
 _yolo_worker_threads: list[threading.Thread] = []
 _yolo_worker_lock = threading.Lock()
 
@@ -84,6 +86,8 @@ def _yolo_batch_loop(worker_id: int) -> None:
 
     while True:
         first = _yolo_queue.get()
+        if first is _YOLO_STOP:
+            break
         batch = [first]
         try:
             while len(batch) < YOLO_BATCH_SIZE:
@@ -126,6 +130,28 @@ def _ensure_yolo_workers() -> None:
             t = threading.Thread(target=_yolo_batch_loop, args=(i,), daemon=True, name=f"yolo-batch-{i}")
             t.start()
             _yolo_worker_threads.append(t)
+
+
+def start_workers() -> None:
+    _ensure_yolo_workers()
+
+
+def stop_workers() -> None:
+    global _yolo_load_error
+    with _yolo_worker_lock:
+        alive = [t for t in _yolo_worker_threads if t.is_alive()]
+        for _ in alive:
+            _yolo_queue.put(_YOLO_STOP)
+        for t in alive:
+            t.join(timeout=60)
+        _yolo_worker_threads.clear()
+        _yolo_worker_ready.clear()
+        _yolo_load_error = None
+    log.info("YOLO workers stopped")
+
+
+def wait_for_ready(timeout: float = 300) -> None:
+    _wait_for_yolo_ready(timeout)
 
 
 def _wait_for_yolo_ready(timeout: float = 300) -> None:

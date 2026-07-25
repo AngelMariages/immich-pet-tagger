@@ -64,7 +64,9 @@ class _EmbedReq:
         self.result: np.ndarray | None = None
 
 
-_embed_queue: queue.Queue[_EmbedReq] = queue.Queue()
+_CLIP_STOP = object()
+
+_embed_queue: queue.Queue = queue.Queue()
 _clip_worker_threads: list[threading.Thread] = []
 _clip_worker_lock = threading.Lock()
 
@@ -116,6 +118,8 @@ def _clip_batch_loop(worker_id: int) -> None:
 
     while True:
         first = _embed_queue.get()
+        if first is _CLIP_STOP:
+            break
         batch = [first]
         try:
             while len(batch) < CLIP_BATCH_SIZE:
@@ -158,6 +162,32 @@ def _ensure_clip_workers() -> None:
             t = threading.Thread(target=_clip_batch_loop, args=(i,), daemon=True, name=f"clip-batch-{i}")
             t.start()
             _clip_worker_threads.append(t)
+
+
+def start_workers() -> None:
+    _ensure_clip_workers()
+
+
+def stop_workers() -> None:
+    global _clip_preprocess_fn, _clip_load_error
+    with _clip_worker_lock:
+        alive = [t for t in _clip_worker_threads if t.is_alive()]
+        for _ in alive:
+            _embed_queue.put(_CLIP_STOP)
+        for t in alive:
+            t.join(timeout=60)
+        _clip_worker_threads.clear()
+        _clip_preprocess_ready.clear()
+        _clip_preprocess_fn = None
+        _clip_load_error = None
+    log.info("CLIP workers stopped")
+
+
+def wait_for_ready(timeout: float = 300) -> None:
+    if not _clip_preprocess_ready.wait(timeout=timeout):
+        raise RuntimeError(_clip_load_error or "CLIP worker did not become ready")
+    if _clip_load_error:
+        raise RuntimeError(f"CLIP not available: {_clip_load_error}")
 
 
 # ---------------------------------------------------------------------------

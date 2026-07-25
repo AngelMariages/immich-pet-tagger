@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Features
+- **Scans now run in an isolated subprocess**: each background or manual scan loads YOLO/CLIP in a short-lived child process that exits when the scan finishes, so the OS fully reclaims its RAM/VRAM instead of it lingering in the main process. Default background poll interval is now 1 hour (`POLL_INTERVAL=3600`). UI-only actions (suggestions, borderline, negatives, import) still load models on demand in-process and unload them when idle.
+
+### Changed
+- YOLO and CLIP no longer start loading at container boot. Models now load on first use (a scan or a UI inference action) instead, and the "models not ready" banner only appears if loading actually fails, not while a model is loading.
+
 ## v1.5.2
 
 ### Features

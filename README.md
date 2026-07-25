@@ -10,7 +10,7 @@ Uses CLIP embeddings and a few reference photos you provide. No cloud services, 
 
 1. You enroll your pets via a web UI: provide a few reference photos and a short description
 2. A logistic regression classifier is trained locally on CLIP embeddings of those references
-3. Every 5 minutes, new photos are scanned: YOLO detects and crops any animals in the photo, then each crop is embedded with CLIP and classified against your pets
+3. Every hour, new photos are scanned: YOLO detects and crops any animals in the photo, then each crop is embedded with CLIP and classified against your pets
 4. Matching pets are tagged in Immich
 5. Pets appear in Immich's People section just like humans
 
@@ -78,7 +78,7 @@ docker compose logs -f   # watch startup logs
 
 If you want GPU acceleration, see [GPU support](#gpu-support) before running.
 
-On first start, the YOLO model (~6 MB) and CLIP model (~350 MB) are downloaded and saved to the /data volume. Subsequent starts are fast and work without an internet connection. The container must have internet access on this first start.
+The first time the app actually needs to detect or classify a photo (a scan, or a UI action like Find suggestions), it downloads the YOLO model (~6 MB) and CLIP model (~350 MB) and saves them to the /data volume. After that, they load from disk and no internet connection is needed. The container must have internet access for this first download.
 
 
 ### Read-Only Root Filesystem
@@ -180,7 +180,7 @@ Once you're happy with the accuracy on the test window:
 1. Set the scan date to the earliest date you want to tag. A good starting point is the date you got your pet.
 2. Click **Scan** to process all photos in that range
 
-After that, the background poller runs every 5 minutes and tags new photos automatically. Your pets appear in Immich's **People** section.
+After that, the background poller runs every hour and tags new photos automatically. Your pets appear in Immich's **People** section.
 
 ---
 
@@ -191,7 +191,7 @@ After that, the background poller runs every 5 minutes and tags new photos autom
 | `IMMICH_URL` | `http://immich-server:2283` | Immich URL for container-to-container communication |
 | `IMMICH_EXTERNAL_URL` | `http://localhost:2283` | Immich URL as seen from your browser, used for links |
 | `IMMICH_API_KEY` | required | Immich API key |
-| `POLL_INTERVAL` | `300` | Seconds between scans |
+| `POLL_INTERVAL` | `3600` | Seconds between background scans. Models are loaded only during a scan and unloaded afterward to save RAM. |
 | `CLIP_MODEL_NAME` | `ViT-B-16` | CLIP model architecture, passed to `open_clip.create_model_and_transforms`. See [open_clip's pretrained list](https://github.com/mlfoundations/open_clip/blob/main/docs/pretrained.md) for valid combinations with `CLIP_PRETRAINED`. Larger models need more RAM/VRAM per `GPU_WORKERS` thread. Embedding caches are namespaced per CLIP/YOLO model combo, so switching is safe and does not affect other models' cached data, but each new combo starts with a cold cache and re-embeds refs and assets on first use. |
 | `CLIP_PRETRAINED` | `openai` | CLIP pretrained weights tag for `CLIP_MODEL_NAME`. |
 | `YOLO_MODEL_NAME` | `yolov8n.pt` | YOLO detection model, passed to `ultralytics.YOLO`. Any Ultralytics-compatible weights file works (e.g. `yolov8s.pt`, `yolov8m.pt` for better accuracy at the cost of speed), as long as it's COCO-trained so the animal class IDs still line up. Larger models need more RAM/VRAM per `GPU_WORKERS` thread. |
@@ -246,7 +246,7 @@ CPU-only works fine for most home libraries. Expect roughly 10x slower processin
 ## Limitations
 
 - **YOLO fallback**: when no animals are detected by YOLO, the full image is classified as a whole and only one pet can be tagged per photo
-- **Polling only**: photos are processed within 5 minutes of upload, not instantly
+- **Polling only**: photos are processed on the next poll cycle (default every hour), not instantly
 
 ## Troubleshooting
 

@@ -19,9 +19,8 @@ async function refreshState() {
     const cfg = await api('/api/config');
     immichUrl = cfg.immich_external_url.replace(/\/$/, '');
     const banner = document.getElementById('modelsBanner');
-    if (!cfg.models_ready) {
-      const err = cfg.models_error ? ` Details: ${cfg.models_error}` : '';
-      banner.innerHTML = '<strong>Models not ready.</strong> On first start, yolov8n.pt (~6 MB) and the CLIP model (~350 MB) are downloaded. Ensure the container has internet access, then wait a moment and reload. To use offline, copy the model files to the data volume (see README).' + (err ? `<br>${err}` : '');
+    if (cfg.models_error) {
+      banner.innerHTML = '<strong>Model load failed.</strong> ' + cfg.models_error + ' On first use, yolov8n.pt (~6 MB) and the CLIP model (~350 MB) are downloaded. Ensure the container has internet access, then retry. To use offline, copy the model files to the data volume (see README).';
       banner.classList.add('visible');
     } else {
       banner.classList.remove('visible');
@@ -80,7 +79,7 @@ function showGuide() {
       <div class="guide-step"><div class="guide-step-num">3</div><div class="guide-step-body"><div class="guide-step-title">Add "not a pet" samples</div><div class="guide-step-desc">These teach the classifier what not to tag: empty rooms, other animals of a different species, ambiguous shots with no clear subject. Without them, the classifier will tag almost anything. In the <strong>Not a pet</strong> panel, click <strong>Find candidates</strong> to automatically surface more photos that might confuse the classifier. To add a specific photo directly, click <strong>Add manually</strong> and paste its Immich URL or asset ID.</div></div></div>
       <div class="guide-step"><div class="guide-step-num">4</div><div class="guide-step-body"><div class="guide-step-title">Run a test scan</div><div class="guide-step-desc">Set the <strong>Scan from</strong> date 1–2 weeks back and click <strong>Scan</strong>. Review low confidence results: add correct ones as refs, and click <strong>Ignore</strong> on the rest. Ignored photos won't appear again.</div></div></div>
       <div class="guide-step"><div class="guide-step-num">5</div><div class="guide-step-body"><div class="guide-step-title">Iterate</div><div class="guide-step-desc">Repeat steps 2–4 a couple of times. Results typically stabilize after 2–3 rounds.</div></div></div>
-      <div class="guide-step"><div class="guide-step-num">6</div><div class="guide-step-body"><div class="guide-step-title">Run the full backfill</div><div class="guide-step-desc">Once happy with accuracy, set the scan date to when you got your pet and run the full scan. After that, new photos are tagged automatically every 5 minutes.</div></div></div>
+      <div class="guide-step"><div class="guide-step-num">6</div><div class="guide-step-body"><div class="guide-step-title">Run the full backfill</div><div class="guide-step-desc">Once happy with accuracy, set the scan date to when you got your pet and run the full scan. After that, new photos are tagged automatically every hour.</div></div></div>
     </div>
   </div>`;
   selectedCrops.clear(); lastClickedKey = null; updateSelUI();

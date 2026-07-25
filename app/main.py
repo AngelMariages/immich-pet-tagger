@@ -16,8 +16,8 @@ from fastapi.responses import FileResponse
 
 from pathlib import Path
 from embedder import load_embed_cache
-from poller import run_poll_cycle, migrate_ref_bboxes
 from api import router as api_router
+import inference
 import detector as det
 import embedder as emb
 
@@ -31,7 +31,7 @@ logging.basicConfig(
 )
 log = logging.getLogger("main")
 
-POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", 300))
+POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", 3600))
 DATA_DIR = os.environ.get("DATA_DIR", "/data")
 LONG_REQUEST_TIMEOUT = int(os.environ.get("LONG_REQUEST_TIMEOUT", 120))
 
@@ -39,11 +39,13 @@ LONG_REQUEST_TIMEOUT = int(os.environ.get("LONG_REQUEST_TIMEOUT", 120))
 async def polling_loop():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     log.info(f"Poller started. Interval: {POLL_INTERVAL}s. Data dir: {DATA_DIR}. Device: {device}")
+    migrated = False
     while True:
         try:
             log.info("Starting poll cycle...")
             async with state.scan_lock:
-                await asyncio.to_thread(run_poll_cycle, DATA_DIR, None, state.scan_cancel)
+                await asyncio.to_thread(inference.run_scan, DATA_DIR, migrate=not migrated)
+                migrated = True
             log.info("Poll cycle complete.")
         except Exception as e:
             log.exception(f"Poll cycle failed: {e}")
@@ -54,10 +56,6 @@ async def polling_loop():
 async def lifespan(app: FastAPI):
     state.init()
     load_embed_cache(Path(DATA_DIR))
-    await asyncio.to_thread(migrate_ref_bboxes, Path(DATA_DIR))
-    # Start model workers eagerly so downloads begin at boot and failures appear in startup logs.
-    det._ensure_yolo_workers()
-    emb._ensure_clip_workers()
     task = asyncio.create_task(polling_loop())
     yield
     task.cancel()
