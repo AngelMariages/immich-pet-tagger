@@ -5,14 +5,16 @@ Two different memory strategies for two different usage patterns:
 - Interactive UI actions (suggestions, borderline, negatives, import) are
   short sessions where a human is actively working, so `inference_session()`
   loads workers in-process on first use and unloads them when the last caller
-  exits. This frees GPU VRAM reliably but host RAM may not fully return to
-  the OS while the web server process itself stays alive.
+  exits. `torch.cuda.empty_cache()` reliably frees GPU VRAM; `malloc_trim(0)`
+  is needed afterward too, since glibc's allocator otherwise keeps freed
+  heap arenas mapped rather than returning them to the OS.
 - Scans (background poll cycle and manual "Scan Now") run unattended, on a
   schedule, forever. `run_scan()` runs the whole cycle in a child OS process
   via scan_worker.py, so when it exits the OS reclaims all RAM/VRAM it used,
   keeping the web server's own footprint near zero between scans.
 """
 
+import ctypes
 import gc
 import json
 import logging
@@ -28,6 +30,11 @@ import detector as det
 import embedder as emb
 
 log = logging.getLogger("inference")
+
+try:
+    _libc = ctypes.CDLL("libc.so.6")
+except OSError:
+    _libc = None
 
 _lock = threading.Lock()
 _refcount = 0
@@ -63,6 +70,8 @@ def inference_session():
                 gc.collect()
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
+                if _libc is not None:
+                    _libc.malloc_trim(0)
                 log.info("Inference models unloaded")
 
 

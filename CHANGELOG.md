@@ -8,6 +8,9 @@
 ### Changed
 - YOLO and CLIP no longer start loading at container boot. Models now load on first use (a scan or a UI inference action) instead, and the "models not ready" banner only appears if loading actually fails, not while a model is loading.
 
+### Fixed
+- Host RAM freed by unloading YOLO/CLIP after a UI inference action (suggestions, borderline, negatives, import) now actually returns to the OS. glibc gives each thread its own malloc arena and only trims the main one, so memory freed by the worker threads was staying mapped even after `gc.collect()`; the container now runs with `MALLOC_ARENA_MAX=1` plus an explicit `malloc_trim(0)` after unload.
+
 ## v1.5.2
 
 ### Features
