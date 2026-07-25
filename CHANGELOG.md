@@ -10,6 +10,8 @@
 
 ### Fixed
 - Host RAM freed by unloading YOLO/CLIP after a UI inference action (suggestions, borderline, negatives, import) now actually returns to the OS. glibc gives each thread its own malloc arena and only trims the main one, so memory freed by the worker threads was staying mapped even after `gc.collect()`; the container now runs with `MALLOC_ARENA_MAX=1` plus an explicit `malloc_trim(0)` after unload.
+- Scans now actually skip loading YOLO/CLIP when there's nothing new to process. The scan subprocess wasn't loading the on-disk embedding cache, so it re-embedded every pet's reference and negative photos with CLIP on every single scan, even ones that found zero new assets. Separately, ref photos that store a crop bounding box were never being written to that cache at all, so they'd keep missing forever regardless. Both are fixed; a scan with fully cached refs and no new assets now completes without touching YOLO or CLIP.
+- Clicking "Scan Now" while the hourly background scan is running now actually cancels it and starts the manual scan immediately, instead of silently queuing behind it until the background scan finishes.
 
 ## v1.5.2
 

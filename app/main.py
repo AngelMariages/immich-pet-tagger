@@ -44,7 +44,8 @@ async def polling_loop():
         try:
             log.info("Starting poll cycle...")
             async with state.scan_lock:
-                await asyncio.to_thread(inference.run_scan, DATA_DIR, migrate=not migrated)
+                state.scan_cancel.clear()
+                await asyncio.to_thread(inference.run_scan, DATA_DIR, migrate=not migrated, cancel=state.scan_cancel)
                 migrated = True
             log.info("Poll cycle complete.")
         except Exception as e:

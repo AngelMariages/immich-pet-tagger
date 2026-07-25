@@ -290,6 +290,7 @@ def get_crops_and_embed(asset_id: str) -> list[tuple[dict, np.ndarray]]:
 
 def embed_crop_by_bbox(asset_id: str, bbox: list) -> np.ndarray | None:
     """Embed a specific crop by normalized bounding box. Used for crop-centric refs."""
+    global _cache_dirty
     with _cache_lock:
         cached = _embed_cache.get(asset_id)
         if cached is not None:
@@ -304,7 +305,15 @@ def embed_crop_by_bbox(asset_id: str, bbox: list) -> np.ndarray | None:
     w, h = img.size
     x1, y1, x2, y2 = bbox
     crop_img = img.crop((int(x1 * w), int(y1 * h), int(x2 * w), int(y2 * h)))
-    return embed_image(crop_img)
+    vec = embed_image(crop_img)
+    if vec is not None:
+        with _cache_lock:
+            _embed_cache[asset_id] = vec
+            _embed_cache.move_to_end(asset_id)
+            if len(_embed_cache) > MAX_EMBED_CACHE_SIZE:
+                _embed_cache.popitem(last=False)
+            _cache_dirty = True
+    return vec
 
 
 def _cache_suffix() -> str:

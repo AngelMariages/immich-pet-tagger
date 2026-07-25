@@ -39,9 +39,11 @@ def main() -> int:
     args = json.loads(sys.stdin.read())
 
     from pathlib import Path
+    from embedder import load_embed_cache
     from poller import run_poll_cycle, migrate_ref_bboxes
 
     data_dir = args["data_dir"]
+    load_embed_cache(Path(data_dir))
     if args.get("migrate"):
         migrate_ref_bboxes(Path(data_dir))
 
