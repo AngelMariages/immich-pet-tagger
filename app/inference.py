@@ -52,10 +52,15 @@ def inference_session():
     with _lock:
         if _refcount == 0:
             log.info("Loading inference models...")
-            det.start_workers()
-            emb.start_workers()
-            det.wait_for_ready()
-            emb.wait_for_ready()
+            try:
+                det.start_workers()
+                emb.start_workers()
+                det.wait_for_ready()
+                emb.wait_for_ready()
+            except Exception:
+                det.stop_workers()
+                emb.stop_workers()
+                raise
             log.info("Inference models ready")
         _refcount += 1
     try:
@@ -102,12 +107,12 @@ def run_scan(data_dir: str, *, manual: bool = False, scan_until: str | None = No
 
     def watch_cancel():
         while proc.poll() is None:
-            if cancel is not None and cancel.wait(timeout=0.2):
+            if cancel.wait(timeout=0.2):
                 proc.terminate()
                 return
 
-    watcher = threading.Thread(target=watch_cancel, daemon=True)
-    watcher.start()
+    if cancel is not None:
+        threading.Thread(target=watch_cancel, daemon=True).start()
 
     def relay_stderr():
         for line in proc.stderr:
