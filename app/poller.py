@@ -6,7 +6,7 @@ import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import classifier as clf_mod
@@ -24,6 +24,14 @@ _count_lock = threading.Lock()
 # ---------------------------------------------------------------------------
 # Date range helpers
 # ---------------------------------------------------------------------------
+
+def _advance_ms(ts: str) -> str:
+    """Bump an ISO timestamp 1ms past the latest processed asset before saving it as
+    the next cursor. Immich's createdAfter/takenAfter filters are inclusive, so saving
+    the asset's own timestamp verbatim would match that same asset again next cycle."""
+    dt = datetime.fromisoformat(ts.replace("Z", "+00:00")) + timedelta(milliseconds=1)
+    return dt.strftime("%Y-%m-%dT%H:%M:%S.") + f"{dt.microsecond // 1000:03d}Z"
+
 
 def parse_date(s: str | None) -> date | None:
     if not s:
@@ -271,5 +279,6 @@ def _run_poll_cycle(dd: Path, counts: dict, on_date=None, cancel=None, low_conf_
     emb.save_embed_cache()
 
     if not manual:
-        data.save_last_timestamp(latest_ts, dd)
-        log.info(f"Saved timestamp: {latest_ts}")
+        next_ts = _advance_ms(latest_ts)
+        data.save_last_timestamp(next_ts, dd)
+        log.info(f"Saved timestamp: {next_ts}")

@@ -64,6 +64,12 @@ ENV HOME=/data \
     XDG_CACHE_HOME=/data/.cache \
     YOLO_CONFIG_DIR=/data/.ultralytics
 
+# glibc's malloc gives each thread its own arena and malloc_trim() only trims the
+# main arena, so freed memory from YOLO/CLIP worker threads stays mapped even after
+# gc.collect() + malloc_trim(). Forcing a single arena makes freed heap reliably
+# return to the OS when inference_session() unloads models.
+ENV MALLOC_ARENA_MAX=1
+
 # Copy code to /app
 WORKDIR /app
 COPY VERSION .

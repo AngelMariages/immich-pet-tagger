@@ -1,5 +1,20 @@
 # Changelog
 
+## v1.6.0
+
+### Features
+- **Scans now run in an isolated subprocess**: each background or manual scan loads YOLO/CLIP in a short-lived child process that exits when the scan finishes, so the OS fully reclaims its RAM/VRAM instead of it lingering in the main process. Default background poll interval is now 1 hour (`POLL_INTERVAL=3600`). UI-only actions (suggestions, borderline, negatives, import) still load models on demand in-process and unload them when idle.
+
+### Changed
+- YOLO and CLIP no longer start loading at container boot. Models now load on first use (a scan or a UI inference action) instead, and the "models not ready" banner only appears if loading actually fails, not while a model is loading.
+
+### Fixed
+- Host RAM freed by unloading YOLO/CLIP after a UI inference action (suggestions, borderline, negatives, import) now actually returns to the OS. glibc gives each thread its own malloc arena and only trims the main one, so memory freed by the worker threads was staying mapped even after `gc.collect()`; the container now runs with `MALLOC_ARENA_MAX=1` plus an explicit `malloc_trim(0)` after unload.
+- Scans now actually skip loading YOLO/CLIP when there's nothing new to process. The scan subprocess wasn't loading the on-disk embedding cache, so it re-embedded every pet's reference and negative photos with CLIP on every single scan, even ones that found zero new assets. Separately, ref photos that store a crop bounding box were never being written to that cache at all, so they'd keep missing forever regardless. Both are fixed; a scan with fully cached refs and no new assets now completes without touching YOLO or CLIP.
+- Clicking "Scan Now" while the hourly background scan is running now actually cancels it and starts the manual scan immediately, instead of silently queuing behind it until the background scan finishes.
+- The scan subprocess could crash on exit with `terminate called without an active exception` (SIGABRT) right after completing a scan successfully, due to a PyTorch/CUDA teardown race during normal Python shutdown. It now exits via `os._exit()` instead, skipping that teardown entirely.
+- The background poller could re-fetch and re-process the same already-tagged photo every single cycle forever, forcing a full YOLO/CLIP load each time even with nothing new to do. The saved poll cursor was the last asset's own timestamp, and Immich's `createdAfter` filter is inclusive; the cursor now advances 1ms past the latest asset before being saved.
+
 ## v1.5.2
 
 ### Features

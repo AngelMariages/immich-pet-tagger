@@ -64,7 +64,9 @@ class _EmbedReq:
         self.result: np.ndarray | None = None
 
 
-_embed_queue: queue.Queue[_EmbedReq] = queue.Queue()
+_CLIP_STOP = object()
+
+_embed_queue: queue.Queue = queue.Queue()
 _clip_worker_threads: list[threading.Thread] = []
 _clip_worker_lock = threading.Lock()
 
@@ -116,6 +118,8 @@ def _clip_batch_loop(worker_id: int) -> None:
 
     while True:
         first = _embed_queue.get()
+        if first is _CLIP_STOP:
+            break
         batch = [first]
         try:
             while len(batch) < CLIP_BATCH_SIZE:
@@ -158,6 +162,32 @@ def _ensure_clip_workers() -> None:
             t = threading.Thread(target=_clip_batch_loop, args=(i,), daemon=True, name=f"clip-batch-{i}")
             t.start()
             _clip_worker_threads.append(t)
+
+
+def start_workers() -> None:
+    _ensure_clip_workers()
+
+
+def stop_workers() -> None:
+    global _clip_preprocess_fn, _clip_load_error
+    with _clip_worker_lock:
+        alive = [t for t in _clip_worker_threads if t.is_alive()]
+        for _ in alive:
+            _embed_queue.put(_CLIP_STOP)
+        for t in alive:
+            t.join(timeout=60)
+        _clip_worker_threads.clear()
+        _clip_preprocess_ready.clear()
+        _clip_preprocess_fn = None
+        _clip_load_error = None
+    log.info("CLIP workers stopped")
+
+
+def wait_for_ready(timeout: float = 300) -> None:
+    if not _clip_preprocess_ready.wait(timeout=timeout):
+        raise RuntimeError(_clip_load_error or "CLIP worker did not become ready")
+    if _clip_load_error:
+        raise RuntimeError(f"CLIP not available: {_clip_load_error}")
 
 
 # ---------------------------------------------------------------------------
@@ -260,6 +290,7 @@ def get_crops_and_embed(asset_id: str) -> list[tuple[dict, np.ndarray]]:
 
 def embed_crop_by_bbox(asset_id: str, bbox: list) -> np.ndarray | None:
     """Embed a specific crop by normalized bounding box. Used for crop-centric refs."""
+    global _cache_dirty
     with _cache_lock:
         cached = _embed_cache.get(asset_id)
         if cached is not None:
@@ -274,7 +305,15 @@ def embed_crop_by_bbox(asset_id: str, bbox: list) -> np.ndarray | None:
     w, h = img.size
     x1, y1, x2, y2 = bbox
     crop_img = img.crop((int(x1 * w), int(y1 * h), int(x2 * w), int(y2 * h)))
-    return embed_image(crop_img)
+    vec = embed_image(crop_img)
+    if vec is not None:
+        with _cache_lock:
+            _embed_cache[asset_id] = vec
+            _embed_cache.move_to_end(asset_id)
+            if len(_embed_cache) > MAX_EMBED_CACHE_SIZE:
+                _embed_cache.popitem(last=False)
+            _cache_dirty = True
+    return vec
 
 
 def _cache_suffix() -> str:

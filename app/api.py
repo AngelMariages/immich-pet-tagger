@@ -26,6 +26,7 @@ import embedder as emb
 import immich as imm
 import state
 from embedder import embed_asset
+from inference import inference_session
 
 log = logging.getLogger("api")
 
@@ -105,20 +106,6 @@ async def get_config():
         "models_ready": det.is_yolo_ready() and emb.is_clip_ready(),
         "models_error": det.get_yolo_error() or emb.get_clip_error(),
     }
-
-
-def _require_inference():
-    """Raise 503 immediately if models are not ready, with an actionable message."""
-    if not det.is_yolo_ready() or not emb.is_clip_ready():
-        err = det.get_yolo_error() or emb.get_clip_error()
-        detail = (
-            f"Models are not ready yet: {err}"
-            if err
-            else "Models are still loading. On first start, yolov8n.pt (~6 MB) and the CLIP model (~350 MB) are downloaded. "
-                 "Ensure the container has internet access, then retry. "
-                 "To use offline, copy the model files to the data volume manually (see README)."
-        )
-        raise HTTPException(status_code=503, detail=detail)
 
 
 def _slim_asset(a: dict) -> dict:
@@ -559,7 +546,6 @@ def _build_classifier_from_config(config: dict):
 
 @router.get("/pets/{name}/suggestions")
 async def get_suggestions(name: str, limit: int = 20):
-    _require_inference()
     config = data.load_config(DATA_DIR)
     if name not in config:
         raise HTTPException(status_code=404, detail=f"Pet '{name}' not found")
@@ -596,30 +582,33 @@ async def get_suggestions(name: str, limit: int = 20):
         return {"assets": [_slim_asset(a) for a in candidates[:limit]]}
 
     def compute():
-        result = _build_classifier_from_config(config)
-        if result is None:
-            return []
-        names, clf, scaler = result
-        if name not in names:
-            return []
-        pet_idx = names.index(name)
-        scored = []
-        with ThreadPoolExecutor(max_workers=emb.SCAN_WORKERS) as ex:
-            futures = {ex.submit(emb.get_crops_and_embed, a["id"]): a for a in candidates}
-            for future in as_completed(futures):
-                a = futures[future]
-                for c, vec in (future.result() or []):
-                    v = np.asarray(vec, dtype=np.float64).reshape(1, -1)
-                    prob = float(clf.predict_proba(scaler.transform(v))[0][pet_idx])
-                    scored.append((prob, {**_slim_asset(a), "crops": [c]}))
-        scored.sort(key=lambda x: x[0], reverse=True)
-        return [item for _, item in scored[:limit]]
+        with inference_session():
+            result = _build_classifier_from_config(config)
+            if result is None:
+                return []
+            names, clf, scaler = result
+            if name not in names:
+                return []
+            pet_idx = names.index(name)
+            scored = []
+            with ThreadPoolExecutor(max_workers=emb.SCAN_WORKERS) as ex:
+                futures = {ex.submit(emb.get_crops_and_embed, a["id"]): a for a in candidates}
+                for future in as_completed(futures):
+                    a = futures[future]
+                    for c, vec in (future.result() or []):
+                        v = np.asarray(vec, dtype=np.float64).reshape(1, -1)
+                        prob = float(clf.predict_proba(scaler.transform(v))[0][pet_idx])
+                        scored.append((prob, {**_slim_asset(a), "crops": [c]}))
+            scored.sort(key=lambda x: x[0], reverse=True)
+            return [item for _, item in scored[:limit]]
 
     async def build_response():
         try:
             results = await asyncio.wait_for(asyncio.to_thread(compute), timeout=LONG_REQUEST_TIMEOUT)
         except asyncio.TimeoutError:
             raise HTTPException(status_code=504, detail=f"Timed out after {LONG_REQUEST_TIMEOUT}s")
+        except RuntimeError as e:
+            raise HTTPException(status_code=503, detail=str(e))
         return {"assets": results}
 
     return await _streaming_json(build_response())
@@ -627,7 +616,6 @@ async def get_suggestions(name: str, limit: int = 20):
 
 @router.get("/pets/{name}/borderline")
 async def get_borderline(name: str, limit: int = 40):
-    _require_inference()
     from poller import THRESHOLD
     config = data.load_config(DATA_DIR)
     if name not in config:
@@ -659,32 +647,33 @@ async def get_borderline(name: str, limit: int = 40):
         state.borderline_progress["total"] = 0
         state.borderline_progress["running"] = True
         try:
-            result = _build_classifier_from_config(config)
-            if result is None:
-                return []
-            names, clf, scaler = result
-            if name not in names:
-                return []
-            pet_idx = names.index(name)
-            state.borderline_progress["total"] = len(candidates)
-            scored = []
-            with ThreadPoolExecutor(max_workers=emb.SCAN_WORKERS) as ex:
-                futures = {ex.submit(emb.get_crops_and_embed, a["id"]): a for a in candidates}
-                done = 0
-                for future in as_completed(futures):
-                    if state.borderline_request_id != my_id:
-                        ex.shutdown(wait=False, cancel_futures=True)
-                        return []
-                    done += 1
-                    state.borderline_progress["current"] = done
-                    a = futures[future]
-                    for c, vec in (future.result() or []):
-                        v = np.asarray(vec, dtype=np.float64).reshape(1, -1)
-                        pet_prob = float(clf.predict_proba(scaler.transform(v))[0][pet_idx])
-                        if LOW <= pet_prob < HIGH:
-                            scored.append((pet_prob, {**_slim_asset(a), "crops": [c], "score": round(pet_prob, 3)}))
-            scored.sort(key=lambda x: x[0])
-            return scored[:limit]
+            with inference_session():
+                result = _build_classifier_from_config(config)
+                if result is None:
+                    return []
+                names, clf, scaler = result
+                if name not in names:
+                    return []
+                pet_idx = names.index(name)
+                state.borderline_progress["total"] = len(candidates)
+                scored = []
+                with ThreadPoolExecutor(max_workers=emb.SCAN_WORKERS) as ex:
+                    futures = {ex.submit(emb.get_crops_and_embed, a["id"]): a for a in candidates}
+                    done = 0
+                    for future in as_completed(futures):
+                        if state.borderline_request_id != my_id:
+                            ex.shutdown(wait=False, cancel_futures=True)
+                            return []
+                        done += 1
+                        state.borderline_progress["current"] = done
+                        a = futures[future]
+                        for c, vec in (future.result() or []):
+                            v = np.asarray(vec, dtype=np.float64).reshape(1, -1)
+                            pet_prob = float(clf.predict_proba(scaler.transform(v))[0][pet_idx])
+                            if LOW <= pet_prob < HIGH:
+                                scored.append((pet_prob, {**_slim_asset(a), "crops": [c], "score": round(pet_prob, 3)}))
+                scored.sort(key=lambda x: x[0])
+                return scored[:limit]
         finally:
             if state.borderline_request_id == my_id:
                 state.borderline_progress["running"] = False
@@ -694,6 +683,8 @@ async def get_borderline(name: str, limit: int = 40):
             scored = await asyncio.wait_for(asyncio.to_thread(compute), timeout=LONG_REQUEST_TIMEOUT)
         except asyncio.TimeoutError:
             raise HTTPException(status_code=504, detail=f"Timed out after {LONG_REQUEST_TIMEOUT}s")
+        except RuntimeError as e:
+            raise HTTPException(status_code=503, detail=str(e))
         return {
             "assets": [slim for _, slim in scored],
             "threshold": THRESHOLD,
@@ -709,7 +700,6 @@ async def get_borderline_progress(name: str):
 
 @router.get("/suggestions/negatives")
 async def get_neg_candidates(limit: int = 60):
-    _require_inference()
     from poller import THRESHOLD
     config = data.load_config(DATA_DIR)
 
@@ -742,26 +732,27 @@ async def get_neg_candidates(limit: int = 60):
         state.neg_progress["total"] = 0
         state.neg_progress["running"] = True
         try:
-            result = _build_classifier_from_config(config)
-            if result is None:
-                return []
-            names, clf, scaler = result
-            unknown_idx = names.index("unknown") if "unknown" in names else -1
-            state.neg_progress["total"] = len(candidates)
-            scored = []
-            for i, a in enumerate(candidates):
-                if state.neg_request_id != my_id:
+            with inference_session():
+                result = _build_classifier_from_config(config)
+                if result is None:
                     return []
-                state.neg_progress["current"] = i + 1
-                vec = embed_asset(a["id"])
-                if vec is not None:
-                    v = np.asarray(vec, dtype=np.float64).reshape(1, -1)
-                    probs = clf.predict_proba(scaler.transform(v))[0]
-                    pet_prob = (1.0 - float(probs[unknown_idx])) if unknown_idx >= 0 else 0.0
-                    if 0.30 <= pet_prob < THRESHOLD:
-                        scored.append((pet_prob, a))
-            scored.sort(key=lambda x: x[0], reverse=True)
-            return scored[:limit]
+                names, clf, scaler = result
+                unknown_idx = names.index("unknown") if "unknown" in names else -1
+                state.neg_progress["total"] = len(candidates)
+                scored = []
+                for i, a in enumerate(candidates):
+                    if state.neg_request_id != my_id:
+                        return []
+                    state.neg_progress["current"] = i + 1
+                    vec = embed_asset(a["id"])
+                    if vec is not None:
+                        v = np.asarray(vec, dtype=np.float64).reshape(1, -1)
+                        probs = clf.predict_proba(scaler.transform(v))[0]
+                        pet_prob = (1.0 - float(probs[unknown_idx])) if unknown_idx >= 0 else 0.0
+                        if 0.30 <= pet_prob < THRESHOLD:
+                            scored.append((pet_prob, a))
+                scored.sort(key=lambda x: x[0], reverse=True)
+                return scored[:limit]
         finally:
             if state.neg_request_id == my_id:
                 state.neg_progress["running"] = False
@@ -771,6 +762,8 @@ async def get_neg_candidates(limit: int = 60):
             scored = await asyncio.wait_for(asyncio.to_thread(compute), timeout=LONG_REQUEST_TIMEOUT)
         except asyncio.TimeoutError:
             raise HTTPException(status_code=504, detail=f"Timed out after {LONG_REQUEST_TIMEOUT}s")
+        except RuntimeError as e:
+            raise HTTPException(status_code=503, detail=str(e))
         return {
             "assets": [{**_slim_asset(a), "score": round(prob, 3)} for prob, a in scored],
             "threshold": THRESHOLD,
@@ -803,7 +796,6 @@ class PetImport(BaseModel):
 
 @router.post("/pets/import")
 async def import_pet(body: PetImport):
-    _require_inference()
     name = body.name.strip()
     if not name:
         raise HTTPException(status_code=400, detail="Name cannot be empty")
@@ -839,17 +831,21 @@ async def import_pet(body: PetImport):
 
     def resolve_all(pairs):
         result = []
-        with ThreadPoolExecutor(max_workers=emb.SCAN_WORKERS) as ex:
-            futures = {ex.submit(emb.resolve_bbox, aid): (aid, face_id) for aid, face_id in pairs}
-            for future in as_completed(futures):
-                aid, face_id = futures[future]
-                bbox = future.result()
-                if bbox:
-                    result.append((aid, face_id, bbox))
+        with inference_session():
+            with ThreadPoolExecutor(max_workers=emb.SCAN_WORKERS) as ex:
+                futures = {ex.submit(emb.resolve_bbox, aid): (aid, face_id) for aid, face_id in pairs}
+                for future in as_completed(futures):
+                    aid, face_id = futures[future]
+                    bbox = future.result()
+                    if bbox:
+                        result.append((aid, face_id, bbox))
         result.sort(key=lambda x: x[0])
         return result
 
-    verified = await asyncio.to_thread(resolve_all, candidates)
+    try:
+        verified = await asyncio.to_thread(resolve_all, candidates)
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
     n = min(len(verified), 20)
     assets = [
         {"asset_id": verified[int(i * len(verified) / n)][0], "face_id": verified[int(i * len(verified) / n)][1], "bbox": verified[int(i * len(verified) / n)][2]}
@@ -874,7 +870,6 @@ async def trigger_scan(body: ScanRequest):
     import re
     if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", body.scan_since):
         raise HTTPException(status_code=400, detail="scan_since must be YYYY-MM-DD")
-    _require_inference()
     import state
     if state.scan_lock is not None and state.scan_lock.locked():
         state.scan_cancel.set()
@@ -895,23 +890,30 @@ async def stop_scan():
 
 async def _run_manual_scan(generation: int, scan_since: str, scan_until: str | None = None):
     import state
-    from poller import run_poll_cycle
+    import inference
     live_counts: dict = {}
     state.manual_scan_result = {"status": "running", "started_at": datetime.now(timezone.utc).isoformat(), "counts": live_counts}
     state.scan_low_conf_assets = []
-    low_conf_assets: list = []
     scan_since_iso = scan_since + "T00:00:00.000Z"
 
     def on_date(date_str):
         if isinstance(state.manual_scan_result, dict):
             state.manual_scan_result["current_date"] = date_str
 
+    def on_counts(counts):
+        live_counts.clear()
+        live_counts.update(counts)
+
     try:
         async with state.scan_lock:
             if state.scan_generation != generation:
                 return
             state.scan_cancel.clear()
-            await asyncio.to_thread(run_poll_cycle, DATA_DIR, on_date, state.scan_cancel, low_conf_assets, live_counts, True, scan_until, scan_since_iso)
+            counts, low_conf_assets = await asyncio.to_thread(
+                inference.run_scan, str(DATA_DIR),
+                manual=True, scan_until=scan_until, scan_since=scan_since_iso,
+                cancel=state.scan_cancel, on_date=on_date, on_counts=on_counts,
+            )
             if state.scan_generation == generation:
                 state.scan_low_conf_assets = low_conf_assets
                 state.manual_scan_result = data.load_poll_status(DATA_DIR)
@@ -996,7 +998,13 @@ async def get_asset_crops(asset_id: str):
     if resp.status_code != 200:
         raise HTTPException(status_code=404, detail="Asset not found. Check the link or ID.")
     meta = resp.json()
-    crops_embed = await asyncio.to_thread(emb.get_crops_and_embed, asset_id)
+    def lookup():
+        with inference_session():
+            return emb.get_crops_and_embed(asset_id)
+    try:
+        crops_embed = await asyncio.to_thread(lookup)
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
     crops = [c for c, _ in crops_embed]
     return {**_slim_asset(meta), "crops": crops}
 
