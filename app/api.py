@@ -432,7 +432,10 @@ async def set_pet_assets(name: str, body: PetCropAssets):
     # Determine new asset_ids (need face assignment, deduplicated)
     seen_aids: set[str] = set()
     new_asset_ids: list[str] = []
+    bbox_by_aid: dict[str, list[float]] = {}
     for cr in crop_refs:
+        if cr.bbox and cr.asset_id not in bbox_by_aid:
+            bbox_by_aid[cr.asset_id] = cr.bbox
         if cr.asset_id not in existing_asset_ids and cr.asset_id not in seen_aids:
             seen_aids.add(cr.asset_id)
             new_asset_ids.append(cr.asset_id)
@@ -449,7 +452,7 @@ async def set_pet_assets(name: str, body: PetCropAssets):
                 if person_id in existing_persons:
                     skipped += 1
                     continue
-                face_id = await imm.post_face(client, aid, person_id)
+                face_id = await imm.post_face(client, aid, person_id, bbox_by_aid.get(aid))
                 if face_id:
                     new_face_ids[aid] = face_id
                     ok += 1
