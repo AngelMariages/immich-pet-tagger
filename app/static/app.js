@@ -189,11 +189,14 @@ function renderPhotoItems(a, thr) {
   const badge = a.score != null
     ? `<div class="score-badge ${a.score < thr ? 'score-low' : 'score-ok'}">${Math.round(a.score * 100)}%</div>`
     : '';
+  const title = a.pet_name
+    ? `${fmtDate(a.date)} · ${Math.round(a.score * 100)}% ${a.pet_name}`
+    : `${a.filename || ''} · ${fmtDate(a.date)}`;
   const makeItem = (key, src, cropIdx, bbox) => {
     const cropIdxAttr = cropIdx != null ? `data-crop-idx="${cropIdx}"` : '';
     const bboxAttr = bbox ? `data-bbox='${JSON.stringify(bbox)}'` : '';
     return `<div class="photo-thumb" id="th-${key}" data-asset-id="${a.id}" ${cropIdxAttr} ${bboxAttr}
-      onclick="toggleSelect(event,'${key}')" title="${a.filename || ''} · ${fmtDate(a.date)}">
+      onclick="toggleSelect(event,'${key}')" title="${title}">
       <img src="${src}" loading="lazy" onerror="this.src='data:image/svg+xml,<svg/>'">
       <a class="photo-open" href="${immichUrl}/photos/${a.id}" target="_blank" rel="noopener" onclick="event.stopPropagation()">⤢</a>
       <div class="photo-check">✓</div>
@@ -203,7 +206,7 @@ function renderPhotoItems(a, thr) {
   if (a.crops && a.crops.length > 0) {
     return a.crops.map(c => makeItem(`${a.id}_${c.crop_idx}`, `/api/crop/${a.id}?bbox=${c.bbox.join(',')}`, c.crop_idx, c.bbox));
   }
-  return [makeItem(a.id, a.thumb, null, null)];
+  return [makeItem(a.id, a.thumb, null, a.bbox || null)];
 }
 
 function markGridItems(assets) {
@@ -664,16 +667,7 @@ async function viewScanLowConf() {
     label.textContent = `${d.assets.length} low confidence result${d.assets.length !== 1 ? 's' : ''}`;
     const thr = d.threshold ?? 0.8;
     const negSet = new Set(negIds);
-    grid.innerHTML = d.assets.map(a => {
-      const cls = a.score < thr ? 'score-low' : 'score-ok';
-      return `<div class="photo-thumb" id="th-${a.id}" data-asset-id="${a.id}"
-        onclick="toggleSelect(event,'${a.id}')" title="${fmtDate(a.date)} · ${Math.round(a.score * 100)}% ${a.pet_name}">
-        <img src="${a.thumb}" loading="lazy" onerror="this.src='data:image/svg+xml,<svg/>'">
-        <a class="photo-open" href="${immichUrl}/photos/${a.id}" target="_blank" rel="noopener" onclick="event.stopPropagation()">⤢</a>
-        <div class="photo-check">✓</div>
-        <div class="score-badge ${cls}">${Math.round(a.score * 100)}%</div>
-      </div>`;
-    }).join('');
+    grid.innerHTML = d.assets.flatMap(a => renderPhotoItems(a, thr)).join('');
     d.assets.forEach(a => { if (negSet.has(a.id)) document.getElementById('th-' + a.id)?.classList.add('is-neg'); });
   } catch(e) {
     label.textContent = 'Failed to load';

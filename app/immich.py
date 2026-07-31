@@ -143,17 +143,26 @@ def post_face_sync(asset_id: str, person_id: str, bbox_norm=None, img_size=None)
 # Async (API routes)
 # ---------------------------------------------------------------------------
 
-async def post_face(client: httpx.AsyncClient, asset_id: str, person_id: str) -> str | None:
+async def post_face(client: httpx.AsyncClient, asset_id: str, person_id: str, bbox_norm=None) -> str | None:
     """Create a face entry in Immich. Returns face_id on success, None on failure.
-    Immich returns 201 with empty body, so face_id is fetched via GET after creation."""
+    Immich returns 201 with empty body, so face_id is fetched via GET after creation.
+    Immich scales the box by the supplied imageWidth/imageHeight, so a normalized
+    bbox can be mapped onto a fixed virtual canvas without fetching the image."""
+    if bbox_norm is not None:
+        x1, y1, x2, y2 = bbox_norm
+        s = FACE_BOX_SIZE
+        bx, by = int(x1 * s), int(y1 * s)
+        bw, bh = int((x2 - x1) * s), int((y2 - y1) * s)
+    else:
+        bx, by, bw, bh = 0, 0, FACE_BOX_SIZE, FACE_BOX_SIZE
     try:
         resp = await client.post(
             f"{IMMICH_URL}/api/faces",
             headers={**headers(), "Content-Type": "application/json"},
             json={"assetId": asset_id, "personId": person_id,
-                  "width": FACE_BOX_SIZE, "height": FACE_BOX_SIZE,
+                  "width": bw, "height": bh,
                   "imageWidth": FACE_BOX_SIZE, "imageHeight": FACE_BOX_SIZE,
-                  "x": 0, "y": 0},
+                  "x": bx, "y": by},
             timeout=30,
         )
         if resp.status_code not in (200, 201):

@@ -432,7 +432,10 @@ async def set_pet_assets(name: str, body: PetCropAssets):
     # Determine new asset_ids (need face assignment, deduplicated)
     seen_aids: set[str] = set()
     new_asset_ids: list[str] = []
+    bbox_by_aid: dict[str, list[float]] = {}
     for cr in crop_refs:
+        if cr.bbox and cr.asset_id not in bbox_by_aid:
+            bbox_by_aid[cr.asset_id] = cr.bbox
         if cr.asset_id not in existing_asset_ids and cr.asset_id not in seen_aids:
             seen_aids.add(cr.asset_id)
             new_asset_ids.append(cr.asset_id)
@@ -449,7 +452,7 @@ async def set_pet_assets(name: str, body: PetCropAssets):
                 if person_id in existing_persons:
                     skipped += 1
                     continue
-                face_id = await imm.post_face(client, aid, person_id)
+                face_id = await imm.post_face(client, aid, person_id, bbox_by_aid.get(aid))
                 if face_id:
                     new_face_ids[aid] = face_id
                     ok += 1
@@ -946,12 +949,15 @@ async def get_scan_low_confidence():
         if aid not in seen or a["prob"] > seen[aid]["prob"]:
             seen[aid] = a
     sorted_assets = sorted(seen.values(), key=lambda a: a["prob"])
+    def make_item(a: dict) -> dict:
+        aid = a["asset_id"]
+        bbox = a.get("bbox")
+        thumb = f"/api/crop/{aid}?bbox={','.join(str(v) for v in bbox)}" if bbox else f"/api/crop/{aid}"
+        return {"id": aid, "thumb": thumb, "bbox": bbox,
+                "pet_name": a["pet_name"], "score": a["prob"], "date": a.get("date", "")}
+
     return {
-        "assets": [
-            {"id": a["asset_id"], "thumb": f"/api/crop/{a['asset_id']}",
-             "pet_name": a["pet_name"], "score": a["prob"], "date": a.get("date", "")}
-            for a in sorted_assets
-        ],
+        "assets": [make_item(a) for a in sorted_assets],
         "pets": list(config.keys()),
         "threshold": THRESHOLD,
     }

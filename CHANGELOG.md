@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.6.1
+
+### Fixed
+- Low-confidence review thumbnails now show the actual cropped animal instead of the whole photo, instead of discarding the detected bounding box before it reached the review queue (fix contributed by @vegardengen in #36).
+- Tagging a pet from the UI (including the low-confidence review grid) now creates the Immich face box over the detected animal region instead of covering the entire image.
+
 ## v1.6.0
 
 ### Features
