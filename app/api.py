@@ -946,12 +946,15 @@ async def get_scan_low_confidence():
         if aid not in seen or a["prob"] > seen[aid]["prob"]:
             seen[aid] = a
     sorted_assets = sorted(seen.values(), key=lambda a: a["prob"])
+    def make_item(a: dict) -> dict:
+        aid = a["asset_id"]
+        bbox = a.get("bbox")
+        thumb = f"/api/crop/{aid}?bbox={','.join(str(v) for v in bbox)}" if bbox else f"/api/crop/{aid}"
+        return {"id": aid, "thumb": thumb, "bbox": bbox,
+                "pet_name": a["pet_name"], "score": a["prob"], "date": a.get("date", "")}
+
     return {
-        "assets": [
-            {"id": a["asset_id"], "thumb": f"/api/crop/{a['asset_id']}",
-             "pet_name": a["pet_name"], "score": a["prob"], "date": a.get("date", "")}
-            for a in sorted_assets
-        ],
+        "assets": [make_item(a) for a in sorted_assets],
         "pets": list(config.keys()),
         "threshold": THRESHOLD,
     }

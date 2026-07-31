@@ -209,7 +209,7 @@ def _run_poll_cycle(dd: Path, counts: dict, on_date=None, cancel=None, low_conf_
                 with _count_lock:
                     counts["low_confidence"] += 1
                 if low_conf_out is not None:
-                    low_conf_out.append({"asset_id": aid, "pet_name": pet_name, "prob": prob, "date": time_str[:10]})
+                    low_conf_out.append({"asset_id": aid, "pet_name": pet_name, "prob": prob, "date": time_str[:10], "bbox": list(bbox_norm) if bbox_norm is not None else None})
                 continue
 
             cfg = config.get(pet_name, {})
