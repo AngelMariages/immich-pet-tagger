@@ -15,12 +15,21 @@ def reset_owner_id():
 
 @pytest.fixture(autouse=True)
 def reset_review_tag():
-    """Reset the review tag config and its cached id between tests."""
-    immich.REVIEW_TAG = ""
-    immich._review_tag_id = None
+    """Reset the review tag config and its cached resolution between tests."""
+    def clear():
+        immich.REVIEW_TAG = ""
+        immich._review_tag_id = None
+        immich._review_tag_resolved = False
+
+    clear()
     yield
-    immich.REVIEW_TAG = ""
-    immich._review_tag_id = None
+    clear()
+
+
+def _cache_review_tag(tag_id: str) -> None:
+    """Pretend resolution already happened, so a test can exercise tagging alone."""
+    immich._review_tag_id = tag_id
+    immich._review_tag_resolved = True
 
 
 # ---------------------------------------------------------------------------
@@ -160,9 +169,25 @@ def test_resolve_review_tag_id_none_on_error(monkeypatch):
     assert immich.resolve_review_tag_id_sync() is None
 
 
+def test_resolve_review_tag_id_gives_up_after_one_failure(monkeypatch):
+    """A key without tag.create must not make every face write retry the upsert:
+    each retry holds the lock across a 15s-timeout call and stalls all scan threads."""
+    immich.REVIEW_TAG = "Review"
+    calls = []
+
+    def failing_put(*a, **kw):
+        calls.append(1)
+        return _json_response(None, status=403)
+
+    monkeypatch.setattr(immich.requests, "put", failing_put)
+    for _ in range(5):
+        immich.apply_review_tag_sync("asset-1")
+    assert len(calls) == 1
+
+
 def test_apply_review_tag_puts_asset_on_tag(monkeypatch):
     immich.REVIEW_TAG = "Review"
-    immich._review_tag_id = "tag-9"
+    _cache_review_tag("tag-9")
     calls = []
     monkeypatch.setattr(immich.requests, "put", _fake_put(calls, {
         "/api/tags/tag-9/assets": _json_response([{"id": "asset-1", "success": True}]),
@@ -173,7 +198,7 @@ def test_apply_review_tag_puts_asset_on_tag(monkeypatch):
 
 def test_apply_review_tag_swallows_errors(monkeypatch):
     immich.REVIEW_TAG = "Review"
-    immich._review_tag_id = "tag-9"
+    _cache_review_tag("tag-9")
 
     def boom(*a, **kw):
         raise ConnectionError("unreachable")
@@ -184,7 +209,7 @@ def test_apply_review_tag_swallows_errors(monkeypatch):
 
 def test_post_face_sync_applies_review_tag(monkeypatch):
     immich.REVIEW_TAG = "Review"
-    immich._review_tag_id = "tag-9"
+    _cache_review_tag("tag-9")
     put_calls = []
     monkeypatch.setattr(immich.requests, "put", _fake_put(put_calls, {
         "/api/tags/tag-9/assets": _json_response([{"id": "asset-1", "success": True}]),
@@ -199,7 +224,7 @@ def test_post_face_sync_applies_review_tag(monkeypatch):
 
 def test_post_face_sync_does_not_tag_when_face_fails(monkeypatch):
     immich.REVIEW_TAG = "Review"
-    immich._review_tag_id = "tag-9"
+    _cache_review_tag("tag-9")
 
     def boom(*a, **kw):
         raise AssertionError("must not tag when face creation failed")

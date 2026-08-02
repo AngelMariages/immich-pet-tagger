@@ -1,7 +1,6 @@
 """Immich HTTP helpers. Sync functions are used by the poller (runs in a thread).
 Async functions are used by the API routes."""
 
-import asyncio
 import logging
 import os
 import threading
@@ -47,11 +46,18 @@ def get_owner_id() -> str | None:
 # for the process lifetime. Applying it is a single PUT per asset issued inline
 # with the face creation, so a face and its review tag always land together --
 # nothing is batched or deferred to a later pass.
+#
+# The lock is not needed for correctness (the upsert is idempotent) -- it just
+# keeps the poller's SCAN_WORKERS threads, which all reach their first face at
+# once, from firing SCAN_WORKERS identical upserts. Resolution is attempted
+# exactly once either way: a failure is cached too, so a bad API key disables
+# tagging with one warning instead of stalling every worker on a doomed call.
+# Scans run in a short-lived subprocess, so the next scan retries from scratch.
 # ---------------------------------------------------------------------------
 
 _review_tag_id: str | None = None
+_review_tag_resolved = False
 _review_tag_lock = threading.Lock()
-_review_tag_alock = asyncio.Lock()
 
 
 def _tag_id_from_upsert(payload) -> str | None:
@@ -68,15 +74,26 @@ def _tag_id_from_upsert(payload) -> str | None:
     return None
 
 
+def _remember_review_tag(tag_id: str | None) -> str | None:
+    """Cache the outcome of a resolution attempt, success or failure."""
+    global _review_tag_id, _review_tag_resolved
+    _review_tag_id = tag_id
+    _review_tag_resolved = True
+    if tag_id:
+        log.info(f"Review tag '{REVIEW_TAG}' -> {tag_id}")
+    else:
+        log.warning(f"Could not resolve review tag '{REVIEW_TAG}'; assets will not be tagged.")
+    return tag_id
+
+
 def resolve_review_tag_id_sync() -> str | None:
     """Return the id of REVIEW_TAG, creating the tag on first use. None if disabled/failed."""
-    global _review_tag_id
     if not REVIEW_TAG:
         return None
-    if _review_tag_id:
+    if _review_tag_resolved:
         return _review_tag_id
     with _review_tag_lock:
-        if _review_tag_id:
+        if _review_tag_resolved:
             return _review_tag_id
         try:
             r = requests.put(
@@ -86,46 +103,34 @@ def resolve_review_tag_id_sync() -> str | None:
                 timeout=15,
             )
             if r.status_code in (200, 201):
-                _review_tag_id = _tag_id_from_upsert(r.json())
-            else:
-                log.warning(f"review tag upsert -> {r.status_code}: {r.text[:200]}")
+                return _remember_review_tag(_tag_id_from_upsert(r.json()))
+            log.warning(f"review tag upsert -> {r.status_code}: {r.text[:200]}")
         except Exception as e:
             log.warning(f"review tag upsert failed: {e}")
-        if not _review_tag_id:
-            log.warning(f"Could not resolve review tag '{REVIEW_TAG}'; assets will not be tagged.")
-        else:
-            log.info(f"Review tag '{REVIEW_TAG}' -> {_review_tag_id}")
-        return _review_tag_id
+        return _remember_review_tag(None)
 
 
 async def resolve_review_tag_id(client: httpx.AsyncClient) -> str | None:
-    """Async twin of resolve_review_tag_id_sync, sharing the same cached id."""
-    global _review_tag_id
+    """Async twin of resolve_review_tag_id_sync, sharing the same cached outcome.
+    No lock here: the API routes await face creation one asset at a time, so there
+    is no concurrent first call to collapse."""
     if not REVIEW_TAG:
         return None
-    if _review_tag_id:
+    if _review_tag_resolved:
         return _review_tag_id
-    async with _review_tag_alock:
-        if _review_tag_id:
-            return _review_tag_id
-        try:
-            resp = await client.put(
-                f"{IMMICH_URL}/api/tags",
-                json={"tags": [REVIEW_TAG]},
-                headers={**headers(), "Content-Type": "application/json"},
-                timeout=15,
-            )
-            if resp.status_code in (200, 201):
-                _review_tag_id = _tag_id_from_upsert(resp.json())
-            else:
-                log.warning(f"review tag upsert -> {resp.status_code}: {resp.text[:200]}")
-        except Exception as e:
-            log.warning(f"review tag upsert failed: {e}")
-        if not _review_tag_id:
-            log.warning(f"Could not resolve review tag '{REVIEW_TAG}'; assets will not be tagged.")
-        else:
-            log.info(f"Review tag '{REVIEW_TAG}' -> {_review_tag_id}")
-        return _review_tag_id
+    try:
+        resp = await client.put(
+            f"{IMMICH_URL}/api/tags",
+            json={"tags": [REVIEW_TAG]},
+            headers={**headers(), "Content-Type": "application/json"},
+            timeout=15,
+        )
+        if resp.status_code in (200, 201):
+            return _remember_review_tag(_tag_id_from_upsert(resp.json()))
+        log.warning(f"review tag upsert -> {resp.status_code}: {resp.text[:200]}")
+    except Exception as e:
+        log.warning(f"review tag upsert failed: {e}")
+    return _remember_review_tag(None)
 
 
 def _log_tag_result(asset_id: str, payload) -> None:
