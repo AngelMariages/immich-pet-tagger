@@ -42,6 +42,8 @@ Uses CLIP embeddings and a few reference photos you provide. No cloud services, 
   | `face.create` | Writing face entries (the actual tagging) |
   | `face.read` | Checking existing faces on an asset |
   | `face.delete` | Removing face entries on ref removal or pet deletion |
+  | `tag.create` | Only with `PET_REVIEW_TAG`: creating the review tag on first use |
+  | `tag.asset` | Only with `PET_REVIEW_TAG`: applying the review tag to tagged photos |
 
 ## Setup
 
@@ -191,6 +193,7 @@ After that, the background poller runs every hour and tags new photos automatica
 | `IMMICH_URL` | `http://immich-server:2283` | Immich URL for container-to-container communication |
 | `IMMICH_EXTERNAL_URL` | `http://localhost:2283` | Immich URL as seen from your browser, used for links |
 | `IMMICH_API_KEY` | required | Immich API key |
+| `PET_REVIEW_TAG` | *(unset)* | If set, this Immich tag is applied to a photo every time a face is written to it (background scan, manual scan, or enrolling a reference photo from the UI), giving you a review queue in Immich of everything the tagger touched. The tag is created on first use if it does not exist; use `/` for a nested tag (e.g. `Pets/Review`). Applied inline with each face, not batched, so a photo shows up under the tag as soon as it is tagged. Removing the tag from a photo in Immich is safe — Pet Tagger never reads it back. |
 | `POLL_INTERVAL` | `3600` | Seconds between background scans. Models are loaded only during a scan and unloaded afterward to save RAM. |
 | `CLIP_MODEL_NAME` | `ViT-B-16` | CLIP model architecture, passed to `open_clip.create_model_and_transforms`. See [open_clip's pretrained list](https://github.com/mlfoundations/open_clip/blob/main/docs/pretrained.md) for valid combinations with `CLIP_PRETRAINED`. Larger models need more RAM/VRAM per `GPU_WORKERS` thread. Embedding caches are namespaced per CLIP/YOLO model combo, so switching is safe and does not affect other models' cached data, but each new combo starts with a cold cache and re-embeds refs and assets on first use. |
 | `CLIP_PRETRAINED` | `openai` | CLIP pretrained weights tag for `CLIP_MODEL_NAME`. |

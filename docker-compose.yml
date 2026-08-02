@@ -14,6 +14,7 @@ services:
       - IMMICH_URL=http://immich-server:2283      # name of your Immich container
       - IMMICH_API_KEY=your_api_key_here          # generate in Immich: Account Settings, API Keys. Keep this secret.
       - IMMICH_EXTERNAL_URL=http://localhost:2283 # how your browser reaches Immich
+      # - PET_REVIEW_TAG=Pets/Review              # optional: tag every photo the tagger adds a face to
       - POLL_INTERVAL=3600
       - GPU_WORKERS=1
       - YOLO_INPUT_SIZE=640
