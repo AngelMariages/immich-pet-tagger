@@ -313,9 +313,13 @@ async def delete_pet(name: str, local_only: bool = False):
     if not local_only and person_id:
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.delete(f"{imm.IMMICH_URL}/api/people/{person_id}", headers=imm.headers())
-        if resp.status_code not in (200, 204):
-            raise HTTPException(status_code=resp.status_code, detail=f"Immich error: {resp.text}")
-        log.info(f"Deleted Immich person {person_id} for pet '{name}', face cleanup running in background")
+            if resp.status_code not in (200, 204):
+                raise HTTPException(status_code=resp.status_code, detail=f"Immich error: {resp.text}")
+            log.info(f"Deleted Immich person {person_id} for pet '{name}', face cleanup running in background")
+
+            for r in data.load_pet_refs(person_id, DATA_DIR):
+                if not _other_pets_have_asset(config, name, r["asset_id"]):
+                    await imm.remove_review_tag(client, r["asset_id"])
 
     del config[name]
     data.save_config(config, DATA_DIR)
@@ -508,10 +512,8 @@ async def remove_pet_asset(name: str, asset_id: str, crop_idx: Optional[int] = N
         face_id = removed[0].get("face_id") if removed else None
         if face_id:
             async with httpx.AsyncClient(timeout=15) as client:
-                resp = await client.request("DELETE", f"{imm.IMMICH_URL}/api/faces/{face_id}", headers=imm.headers(), json={"force": True})
-                if resp.status_code in (200, 204) and not _other_pets_have_asset(config, name, asset_id):
-                    await imm.remove_review_tag(client, asset_id)
-            log.info(f"Deleted face {face_id} on asset {asset_id} for pet '{name}' (status={resp.status_code})")
+                status = await imm.delete_face(client, face_id, asset_id, untag=not _other_pets_have_asset(config, name, asset_id))
+            log.info(f"Deleted face {face_id} on asset {asset_id} for pet '{name}' (status={status})")
         else:
             log.warning(f"No stored face_id for asset {asset_id} on pet '{name}', face not removed from Immich")
 

@@ -204,6 +204,18 @@ async def remove_review_tag(client: httpx.AsyncClient, asset_id: str) -> None:
         log.warning(f"review tag removal on {asset_id} failed: {e}")
 
 
+async def delete_face(client: httpx.AsyncClient, face_id: str, asset_id: str, untag: bool = True) -> int:
+    """Delete a face and, right here, remove its review tag. Paired in one call (mirroring
+    post_face's create+apply pairing) so a caller can never delete a face and forget the tag.
+    untag=False lets the caller skip removal when another pet's face still covers the asset."""
+    resp = await client.request(
+        "DELETE", f"{IMMICH_URL}/api/faces/{face_id}", headers=headers(), json={"force": True},
+    )
+    if resp.status_code in (200, 204) and untag:
+        await remove_review_tag(client, asset_id)
+    return resp.status_code
+
+
 # ---------------------------------------------------------------------------
 # Sync (poller)
 # ---------------------------------------------------------------------------
