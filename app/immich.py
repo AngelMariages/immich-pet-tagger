@@ -15,7 +15,7 @@ IMMICH_API_KEY = os.environ.get("IMMICH_API_KEY", "")
 
 # When set, this Immich tag is applied to an asset every time a face is written to it,
 # so tagged photos can be reviewed in Immich. Empty means the feature is off.
-REVIEW_TAG = os.environ.get("PET_REVIEW_TAG", "").strip()
+REVIEW_TAG = os.environ.get("TAG_NAME", "").strip()
 
 FACE_BOX_SIZE = 256
 
