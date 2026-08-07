@@ -182,6 +182,28 @@ async def apply_review_tag(client: httpx.AsyncClient, asset_id: str) -> None:
         log.warning(f"review tag on {asset_id} failed: {e}")
 
 
+async def remove_review_tag(client: httpx.AsyncClient, asset_id: str) -> None:
+    """Strip REVIEW_TAG from asset_id, undoing apply_review_tag. No-op when unset or never
+    resolved (nothing to remove either way). Never raises: caller has already removed the
+    face that prompted this and must not fail because of a tagging cleanup issue."""
+    if not REVIEW_TAG or not _review_tag_id:
+        return
+    try:
+        resp = await client.request(
+            "DELETE",
+            f"{IMMICH_URL}/api/tags/{_review_tag_id}/assets",
+            json={"ids": [asset_id]},
+            headers={**headers(), "Content-Type": "application/json"},
+            timeout=15,
+        )
+        if resp.status_code != 200:
+            log.warning(f"review tag removal on {asset_id} -> {resp.status_code}: {resp.text[:200]}")
+            return
+        _log_tag_result(asset_id, resp.json())
+    except Exception as e:
+        log.warning(f"review tag removal on {asset_id} failed: {e}")
+
+
 # ---------------------------------------------------------------------------
 # Sync (poller)
 # ---------------------------------------------------------------------------

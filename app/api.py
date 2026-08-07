@@ -475,6 +475,18 @@ async def set_pet_assets(name: str, body: PetCropAssets):
     return {"ok": True, "count": len(final_refs), "faces_added": ok, "faces_failed": fail}
 
 
+def _other_pets_have_asset(config: dict, exclude_name: str, asset_id: str) -> bool:
+    """True if some pet other than exclude_name still has a ref on asset_id, meaning the
+    photo still carries a face this tool wrote and shouldn't lose its review tag."""
+    for pet_name, cfg in config.items():
+        if pet_name == exclude_name:
+            continue
+        folder_key = cfg.get("person_id") or pet_name
+        if any(r["asset_id"] == asset_id for r in data.load_pet_refs(folder_key, DATA_DIR)):
+            return True
+    return False
+
+
 @router.delete("/pets/{name}/assets/{asset_id}")
 async def remove_pet_asset(name: str, asset_id: str, crop_idx: Optional[int] = None):
     config = data.load_config(DATA_DIR)
@@ -497,6 +509,8 @@ async def remove_pet_asset(name: str, asset_id: str, crop_idx: Optional[int] = N
         if face_id:
             async with httpx.AsyncClient(timeout=15) as client:
                 resp = await client.request("DELETE", f"{imm.IMMICH_URL}/api/faces/{face_id}", headers=imm.headers(), json={"force": True})
+                if resp.status_code in (200, 204) and not _other_pets_have_asset(config, name, asset_id):
+                    await imm.remove_review_tag(client, asset_id)
             log.info(f"Deleted face {face_id} on asset {asset_id} for pet '{name}' (status={resp.status_code})")
         else:
             log.warning(f"No stored face_id for asset {asset_id} on pet '{name}', face not removed from Immich")
