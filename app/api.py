@@ -15,7 +15,7 @@ from typing import Optional
 import httpx
 import numpy as np
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, Response
 from pydantic import BaseModel
 
 import io
@@ -106,6 +106,15 @@ async def get_config():
         "models_ready": det.is_yolo_ready() and emb.is_clip_ready(),
         "models_error": det.get_yolo_error() or emb.get_clip_error(),
     }
+
+
+@router.get("/settings")
+async def get_settings():
+    """Env-var-configured defaults (THRESHOLD, YOLO_CONF). Read-only: production config
+    lives in docker-compose.yml only. Used to prefill the benchmark tool's per-run
+    threshold overrides, which are never persisted, they only apply to that one run."""
+    from poller import THRESHOLD
+    return {"threshold": THRESHOLD, "yolo_conf": det.YOLO_CONF}
 
 
 def _slim_asset(a: dict) -> dict:
@@ -715,6 +724,224 @@ async def get_borderline(name: str, limit: int = 40):
 @router.get("/pets/{name}/borderline/progress")
 async def get_borderline_progress(name: str):
     return state.borderline_progress
+
+
+BENCHMARK_BUCKETS = ("yolo_strong", "yolo_weak", "fallback", "video_yolo_strong", "video_yolo_weak", "video_fallback")
+DEFAULT_YOLO_STRONG_CONF = 0.25  # Ultralytics' own default; what YOLO_CONF used to be before it was lowered
+
+
+class BenchmarkRequest(BaseModel):
+    since: str
+    until: Optional[str] = None
+    thresholds: Optional[dict[str, float]] = None  # keys: see BENCHMARK_BUCKETS
+    yolo_conf: Optional[float] = None  # detection confidence floor for this run only
+    yolo_strong_conf: Optional[float] = None  # weak/strong boundary for this run only
+
+
+@router.post("/analysis/benchmark")
+async def start_benchmark(body: BenchmarkRequest):
+    """Diagnostic, not part of the tagging pipeline: dry-run classify every asset (photo
+    and video) in the given date range and compare against the actual Immich tags (source
+    of truth). Runs in the background since a full library can take several minutes; poll
+    GET /analysis/benchmark for progress and the result. See benchmark.html.
+
+    Immich's tags in the range are treated as ground truth, so the caller is responsible
+    for making sure every asset in range has already been manually tagged and corrected
+    before running this; un-reviewed or wrong tags produce misleading results."""
+    import re
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", body.since):
+        raise HTTPException(status_code=400, detail="since must be YYYY-MM-DD")
+    if body.thresholds:
+        for bucket, val in body.thresholds.items():
+            if bucket not in BENCHMARK_BUCKETS:
+                raise HTTPException(status_code=400, detail=f"Unknown bucket '{bucket}', expected one of {BENCHMARK_BUCKETS}")
+            if not (0 < val <= 1):
+                raise HTTPException(status_code=400, detail=f"threshold for '{bucket}' must be between 0 and 1")
+    if body.yolo_conf is not None and not (0 < body.yolo_conf <= 1):
+        raise HTTPException(status_code=400, detail="yolo_conf must be between 0 and 1")
+    if body.yolo_strong_conf is not None and not (0 < body.yolo_strong_conf <= 1):
+        raise HTTPException(status_code=400, detail="yolo_strong_conf must be between 0 and 1")
+    if state.benchmark_progress["running"]:
+        raise HTTPException(status_code=409, detail="A benchmark is already running")
+    state.benchmark_generation += 1
+    state.benchmark_cancel.clear()
+    asyncio.create_task(_run_benchmark(
+        state.benchmark_generation, body.since, body.until, body.thresholds, body.yolo_conf, body.yolo_strong_conf,
+    ))
+    return {"status": "started"}
+
+
+@router.post("/analysis/benchmark/stop")
+async def stop_benchmark():
+    """Cancels an in-progress benchmark. Whatever was already classified before the
+    cancel is still assembled into a usable result (same as a completed run), not
+    discarded, since a partial answer over most of the range beats none at all."""
+    if state.benchmark_progress["running"]:
+        state.benchmark_cancel.set()
+    return {"status": "stopping"}
+
+
+@router.get("/analysis/benchmark")
+async def get_benchmark():
+    return {"progress": state.benchmark_progress, "result": state.benchmark_result}
+
+
+@router.post("/analysis/benchmark/result")
+async def set_benchmark_result(body: dict):
+    """Store an externally-provided result (e.g. a file re-imported in benchmark.html) as
+    the current one, so /download can serve it back too, not just freshly-run results."""
+    state.benchmark_result = body
+    return {"status": "ok"}
+
+
+@router.get("/analysis/benchmark/download")
+async def download_benchmark():
+    """Serves the current result as a file attachment via Content-Disposition instead of
+    a client-side blob URL: some browsers don't reliably honor the <a download> attribute
+    on blob: URLs, silently saving with the blob's internal id and no extension instead."""
+    if state.benchmark_result is None:
+        raise HTTPException(status_code=404, detail="No benchmark result available")
+    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    return Response(
+        content=json.dumps(state.benchmark_result),
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="benchmark_{stamp}.json"'},
+    )
+
+
+def _benchmark_bucket(asset_type: str, yolo_detected: bool, max_det_conf: float | None, strong_conf: float) -> str:
+    """Three-way split, not just detected/not: a crop found only because YOLO_CONF was
+    lowered (weak) is a much noisier signal than one that would have been found at the
+    old default confidence too (strong), so they're tracked separately rather than
+    silently pooled into one 'yolo' bucket with the noise diluting the strong signal."""
+    is_video = asset_type == "VIDEO"
+    if not yolo_detected:
+        return "video_fallback" if is_video else "fallback"
+    strong = max_det_conf is not None and max_det_conf >= strong_conf
+    if is_video:
+        return "video_yolo_strong" if strong else "video_yolo_weak"
+    return "yolo_strong" if strong else "yolo_weak"
+
+
+async def _run_benchmark(
+    generation: int, since: str, until: str | None,
+    threshold_overrides: dict[str, float] | None = None,
+    yolo_conf_override: float | None = None,
+    yolo_strong_conf_override: float | None = None,
+):
+    state.benchmark_progress = {"current": 0, "total": 0, "running": True}
+    state.benchmark_result = None
+
+    def compute():
+        from poller import THRESHOLD
+        default_threshold = THRESHOLD
+        overrides = threshold_overrides or {}
+        thresholds = {b: overrides.get(b, default_threshold) for b in BENCHMARK_BUCKETS}
+        yolo_conf = yolo_conf_override if yolo_conf_override is not None else det.YOLO_CONF
+        yolo_strong_conf = yolo_strong_conf_override if yolo_strong_conf_override is not None else DEFAULT_YOLO_STRONG_CONF
+        config_block = {
+            "clip_model": emb.CLIP_MODEL_NAME, "clip_pretrained": emb.CLIP_PRETRAINED,
+            "yolo_model": det.YOLO_MODEL_NAME, "yolo_input_size": det.YOLO_INPUT_SIZE,
+            "yolo_conf": yolo_conf, "yolo_strong_conf": yolo_strong_conf,
+            "threshold_default": default_threshold, "thresholds": thresholds, "since": since, "until": until,
+        }
+        with inference_session():
+            config = data.load_config(DATA_DIR)
+            pet_names = [n for n, cfg in config.items() if cfg.get("person_id")]
+            person_to_pet = {config[n]["person_id"]: n for n in pet_names}
+            result = _build_classifier_from_config(config)
+            if result is None:
+                return {"config": config_block, "stats": [], "missing": {}, "extra": {}}
+            names, clf, scaler = result
+            pet_idx = {n: names.index(n) for n in pet_names if n in names}
+
+            since_iso = since + "T00:00:00.000Z"
+            until_iso = f"{until}T23:59:59.999Z" if until else None
+            assets = imm.fetch_assets_in_range(since_iso, until_iso)
+            state.benchmark_progress["total"] = len(assets)
+
+            def process(a):
+                """Returns (bucket, pet, kind, item) for every pet that has ground truth
+                and/or a predicted match on this asset. Pure per-asset work only, no
+                shared state, so results are safe to aggregate after the fact in the
+                single-threaded collection loop below."""
+                aid = a.get("id")
+                gt_pets = {person_to_pet[p] for p in imm.fetch_asset_face_person_ids(aid) if p in person_to_pet}
+                img = emb.fetch_thumbnail(aid)
+                if img is None:
+                    return []
+                detected = emb.crop_animals(img, conf=yolo_conf, with_conf=True)
+                yolo_detected = bool(detected)
+                max_det_conf = max((c for _, _, c in detected), default=None)
+                crops = [(bbox, crop) for bbox, crop, _ in detected] if detected else [(None, img)]
+                best = {n: 0.0 for n in pet_names}
+                for _, crop in crops:
+                    vec = emb.embed_image(crop)
+                    if vec is None:
+                        continue
+                    v = np.asarray(vec, dtype=np.float64).reshape(1, -1)
+                    probs = clf.predict_proba(scaler.transform(v))[0]
+                    for n in pet_names:
+                        if n in pet_idx:
+                            best[n] = max(best[n], float(probs[pet_idx[n]]))
+                bucket = _benchmark_bucket(a.get("type"), yolo_detected, max_det_conf, yolo_strong_conf)
+                th = thresholds[bucket]
+                out = []
+                for n in pet_names:
+                    gt = n in gt_pets
+                    pred = best[n] >= th
+                    if not gt and not pred:
+                        continue
+                    kind = "correct" if gt == pred else ("missing" if gt else "extra")
+                    item = {"asset_id": aid, "date": (a.get("fileCreatedAt") or "")[:10],
+                             "type": a.get("type"), "yolo_detected": yolo_detected, "bucket": bucket,
+                             "det_conf": round(max_det_conf, 4) if max_det_conf is not None else None,
+                             "score": round(best[n], 4)}
+                    out.append((bucket, n, kind, item))
+                return out
+
+            missing = {n: [] for n in pet_names}
+            extra = {n: [] for n in pet_names}
+            counts: dict[tuple[str, str], dict[str, int]] = {}
+
+            cancelled = False
+            with ThreadPoolExecutor(max_workers=emb.SCAN_WORKERS) as ex:
+                futures = [ex.submit(process, a) for a in assets]
+                for i, fut in enumerate(as_completed(futures), 1):
+                    for bucket, pet, kind, item in fut.result():
+                        c = counts.setdefault((bucket, pet), {"gt": 0, "correct": 0, "missing": 0, "extra": 0})
+                        if kind in ("correct", "missing"):
+                            c["gt"] += 1
+                        c[kind] += 1
+                        if kind == "missing":
+                            missing[pet].append(item)
+                        elif kind == "extra":
+                            extra[pet].append(item)
+                    state.benchmark_progress["current"] = i
+                    if state.benchmark_cancel.is_set():
+                        cancelled = True
+                        ex.shutdown(wait=False, cancel_futures=True)
+                        break
+
+            for n in pet_names:
+                missing[n].sort(key=lambda x: -x["score"])
+                extra[n].sort(key=lambda x: -x["score"])
+
+            stats = []
+            for (bucket, pet), c in sorted(counts.items()):
+                recall = round(100 * c["correct"] / c["gt"], 1) if c["gt"] else None
+                stats.append({"bucket": bucket, "pet": pet, **c, "recall_pct": recall})
+
+            config_block["partial"] = cancelled
+            if cancelled:
+                config_block["assets_scanned"] = state.benchmark_progress["current"]
+                config_block["assets_total"] = len(assets)
+            return {"config": config_block, "stats": stats, "missing": missing, "extra": extra}
+
+    try:
+        state.benchmark_result = await asyncio.to_thread(compute)
+    finally:
+        state.benchmark_progress["running"] = False
 
 
 @router.get("/suggestions/negatives")

@@ -17,6 +17,13 @@ YOLO_BATCH_SIZE = int(os.environ.get("YOLO_BATCH_SIZE", 32))
 YOLO_WORKERS = int(os.environ.get("GPU_WORKERS", 2))
 YOLO_INPUT_SIZE = int(os.environ.get("YOLO_INPUT_SIZE", 640))
 YOLO_MODEL_NAME = os.environ.get("YOLO_MODEL_NAME", "yolov8n.pt")
+YOLO_CONF = float(os.environ.get("YOLO_CONF", 0.25))
+
+# Passed to the model call itself: a permissive floor so boxes are never discarded before
+# reaching Python. The real cutoff (YOLO_CONF, optionally overridden per request, e.g. by
+# the benchmark tool) is applied afterward, so testing a different confidence never needs
+# a second inference pass over the same image.
+_MODEL_CONF_FLOOR = 0.001
 
 ANIMAL_CLASS_IDS = {
     14,  # bird
@@ -33,9 +40,10 @@ ANIMAL_CLASS_IDS = {
 
 
 class _YoloReq:
-    __slots__ = ("tensor", "event", "result")
-    def __init__(self, tensor: torch.Tensor):
+    __slots__ = ("tensor", "conf", "event", "result")
+    def __init__(self, tensor: torch.Tensor, conf: float):
         self.tensor = tensor
+        self.conf = conf
         self.event = threading.Event()
         self.result: list | None = None
 
@@ -103,7 +111,7 @@ def _yolo_batch_loop(worker_id: int) -> None:
             # Tensors are already preprocessed by caller threads: B×C×H×W, float32, [0,1], RGB.
             # Ultralytics skips PIL/numpy conversion when given a tensor directly.
             stacked = torch.stack([req.tensor for req in batch])
-            results_list = model(stacked, verbose=False, imgsz=YOLO_INPUT_SIZE)
+            results_list = model(stacked, verbose=False, imgsz=YOLO_INPUT_SIZE, conf=_MODEL_CONF_FLOOR)
             for req, result in zip(batch, results_list):
                 boxes = []
                 for box in result.boxes:
@@ -111,10 +119,12 @@ def _yolo_batch_loop(worker_id: int) -> None:
                     if cls not in ANIMAL_CLASS_IDS:
                         continue
                     conf = float(box.conf[0])
+                    if conf < req.conf:
+                        continue
                     x1, y1, x2, y2 = box.xyxyn[0].tolist()
                     boxes.append((conf, x1, y1, x2, y2))
                 boxes.sort(reverse=True)
-                req.result = [(x1, y1, x2, y2) for _, x1, y1, x2, y2 in boxes]
+                req.result = boxes  # (conf, x1, y1, x2, y2), highest confidence first
                 req.event.set()
         except Exception as e:
             log.warning(f"YOLO worker {worker_id} batch error: {e}")
@@ -164,15 +174,17 @@ def _wait_for_yolo_ready(timeout: float = 300) -> None:
         time.sleep(0.1)
 
 
-def detect_animals(img: Image.Image) -> list[tuple[float, float, float, float]]:
-    """Returns (x1, y1, x2, y2) normalized bboxes for detected animals, sorted by confidence."""
+def detect_animals(img: Image.Image, conf: float | None = None) -> list[tuple[float, float, float, float, float]]:
+    """Returns (conf, x1, y1, x2, y2) for detected animals, highest confidence first.
+    conf overrides YOLO_CONF for this call only (e.g. a benchmark testing a different
+    cutoff); the underlying inference is unaffected either way, only the filter is."""
     _ensure_yolo_workers()
     _wait_for_yolo_ready()
     # Pre-process in caller's thread (parallel across all scan workers).
     small = img.resize((YOLO_INPUT_SIZE, YOLO_INPUT_SIZE), Image.BILINEAR)
     arr = np.array(small, dtype=np.float32) / 255.0  # H×W×3, RGB, [0,1]
     tensor = torch.from_numpy(arr.transpose(2, 0, 1))  # C×H×W
-    req = _YoloReq(tensor)
+    req = _YoloReq(tensor, conf if conf is not None else YOLO_CONF)
     _yolo_queue.put(req)
     if not req.event.wait(timeout=120):
         raise RuntimeError("YOLO worker did not respond within 120 s. Model may still be downloading.")

@@ -23,6 +23,7 @@ Uses CLIP embeddings and a few reference photos you provide. No cloud services, 
 - **Date ranges**: restrict a pet to photos taken within a specific period (useful for pets that have passed away or were adopted later).
 - **Scan controls**: set the scan start date and trigger a scan from the sidebar; the last scan stats are shown live.
 - **Manage pets**: rename a pet, remove it from Pet Tagger only (keeps it and its tags in Immich untouched, so you can re-import later), delete it entirely (also removes the person and all its tags from Immich), or reset its Immich tags (untags every photo but keeps your curated reference photos so you can start tagging fresh).
+- **Tagging benchmark** (📊 icon in the sidebar, or `/benchmark.html`): dry-run classifies a date range and compares it against your existing Immich tags, so you can see recall/false-positive rates and tune thresholds before trusting a full scan.
 
 ## Requirements
 
@@ -174,6 +175,8 @@ Start with a recent date so the scan covers fewer photos, making it quicker to r
 ### Step 5: Iterate
 
 Repeat steps 2–4 a couple of times. Each round of added references and negatives improves accuracy. Results typically stabilize after 2–3 iterations.
+
+If you want a more precise read on accuracy than eyeballing the scan results, use the **tagging benchmark** (📊 icon in the sidebar, or `/benchmark.html`): it dry-runs classification over a date range and compares it against your existing Immich tags, showing recall and false-positive rates broken down by pet, photo/video, and detection confidence, and lets you test different thresholds without waiting for a real scan.
 
 ### Step 6: Run the full backfill
 

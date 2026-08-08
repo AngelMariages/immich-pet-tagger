@@ -232,3 +232,23 @@ def test_post_face_sync_does_not_tag_when_face_fails(monkeypatch):
     monkeypatch.setattr(immich.requests, "put", boom)
     monkeypatch.setattr(immich.requests, "post", lambda *a, **kw: _json_response(None, status=400))
     assert immich.post_face_sync("asset-1", "person-1") is None
+
+
+# ---------------------------------------------------------------------------
+# Benchmark analysis helpers
+# ---------------------------------------------------------------------------
+
+def test_fetch_assets_in_range_keeps_full_items(monkeypatch):
+    items = [{"id": "a0", "type": "IMAGE", "fileCreatedAt": "2024-01-01"},
+             {"id": "a1", "type": "VIDEO", "fileCreatedAt": "2024-01-02"}]
+    calls = []
+
+    def post(url, json, **kw):
+        calls.append(json)
+        return _search_response(items)
+
+    monkeypatch.setattr(immich.requests, "post", post)
+    result = immich.fetch_assets_in_range("2024-01-01T00:00:00.000Z", "2024-01-31T23:59:59.999Z")
+    assert result == items
+    assert calls[0]["takenAfter"] == "2024-01-01T00:00:00.000Z"
+    assert calls[0]["takenBefore"] == "2024-01-31T23:59:59.999Z"

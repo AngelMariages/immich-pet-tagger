@@ -95,6 +95,11 @@ async def root():
     return FileResponse(str(BASE_DIR / "static" / "index.html"))
 
 
+@app.get("/benchmark.html")
+async def benchmark_page():
+    return FileResponse(str(BASE_DIR / "static" / "benchmark.html"))
+
+
 if __name__ == "__main__":
     uvicorn.run(
         "main:app",

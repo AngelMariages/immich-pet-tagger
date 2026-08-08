@@ -11,6 +11,7 @@ from pathlib import Path
 
 import classifier as clf_mod
 import data
+import detector as det
 import embedder as emb
 import immich as imm
 
@@ -113,8 +114,8 @@ def migrate_ref_bboxes(data_dir: Path) -> None:
 # ---------------------------------------------------------------------------
 
 def run_poll_cycle(data_dir: str, on_date=None, cancel=None, low_conf_out=None, live_counts: dict | None = None, manual: bool = False, scan_until: str | None = None, scan_since: str | None = None) -> None:
-    log.info(f"Poll cycle | threshold={THRESHOLD} manual={manual}")
     dd = Path(data_dir)
+    log.info(f"Poll cycle | threshold={THRESHOLD} yolo_conf={det.YOLO_CONF} manual={manual}")
     now = datetime.now(timezone.utc).isoformat()
     data.write_poll_status(dd, {"status": "running", "started_at": now})
 
@@ -178,6 +179,8 @@ def _run_poll_cycle(dd: Path, counts: dict, on_date=None, cancel=None, low_conf_
         return
 
     latest_ts = max((ts for _, ts in assets), default=last_ts)
+    threshold = THRESHOLD
+    yolo_conf = det.YOLO_CONF
 
     def process_asset(aid: str, time_str: str) -> None:
         if cancel and cancel.is_set():
@@ -191,7 +194,7 @@ def _run_poll_cycle(dd: Path, counts: dict, on_date=None, cancel=None, low_conf_
             with _count_lock:
                 counts["no_thumb"] += 1
             return
-        detected = emb.crop_animals(img)
+        detected = emb.crop_animals(img, conf=yolo_conf)
         if not detected:
             crops = [(None, img)]
         else:
@@ -214,7 +217,7 @@ def _run_poll_cycle(dd: Path, counts: dict, on_date=None, cancel=None, low_conf_
 
             pet_name, prob = clf_mod.classify(vec, names, clf, scaler)
             cfg = config.get(pet_name, {})
-            outcome = classify_outcome(pet_name, prob, time_str, cfg)
+            outcome = classify_outcome(pet_name, prob, time_str, cfg, threshold=threshold)
 
             if outcome == "unknown":
                 with _count_lock:

@@ -220,19 +220,24 @@ def embed_image(img: Image.Image) -> np.ndarray | None:
     return req.result
 
 
-def crop_animals(img: Image.Image) -> list[tuple[tuple, Image.Image]]:
-    """Detect animals and return (bbox_norm, crop) pairs. Empty list means no animals found."""
+def crop_animals(img: Image.Image, conf: float | None = None, with_conf: bool = False):
+    """Detect animals and return (bbox_norm, crop) pairs, or (bbox_norm, crop, detection_conf)
+    triples if with_conf=True (e.g. to bucket by detection strength, not just presence).
+    Empty list means no animals found. conf overrides YOLO_CONF for this call only, see
+    detector.detect_animals."""
     try:
         from detector import detect_animals
-        boxes = detect_animals(img)
+        detections = detect_animals(img, conf=conf)  # (conf, x1, y1, x2, y2)
     except Exception as e:
         log.warning(f"YOLO detection failed: {e}")
         return []
     w, h = img.size
-    return [
-        (bbox, img.crop((int(bbox[0] * w), int(bbox[1] * h), int(bbox[2] * w), int(bbox[3] * h))))
-        for bbox in boxes
-    ]
+    out = []
+    for det_conf, x1, y1, x2, y2 in detections:
+        bbox = (x1, y1, x2, y2)
+        crop = img.crop((int(x1 * w), int(y1 * h), int(x2 * w), int(y2 * h)))
+        out.append((bbox, crop, det_conf) if with_conf else (bbox, crop))
+    return out
 
 
 def _crops_to_result(pairs: list[tuple[list, np.ndarray]]) -> list[tuple[dict, np.ndarray]]:

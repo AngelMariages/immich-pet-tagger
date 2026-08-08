@@ -235,6 +235,31 @@ def fetch_assets_taken_after(taken_after_iso: str, taken_before_iso: str | None 
     return _fetch_assets(query, ts_field="fileCreatedAt", label="fetch_assets_taken_after")
 
 
+def fetch_assets_in_range(taken_after_iso: str, taken_before_iso: str | None = None) -> list[dict]:
+    """Return raw search/metadata items (id, type, fileCreatedAt, ...) for a date range.
+    Unlike fetch_assets_taken_after, keeps the full item so callers can tell photos from
+    videos (the 'type' field), used by the benchmark analysis."""
+    query: dict = {"takenAfter": taken_after_iso}
+    if taken_before_iso:
+        query["takenBefore"] = taken_before_iso
+    url = f"{IMMICH_URL}/api/search/metadata"
+    hdrs = {**headers(), "Content-Type": "application/json"}
+    out: list[dict] = []
+    page = 1
+    size = 1000
+    while True:
+        r = requests.post(url, json={**query, "page": page, "size": size, "order": "asc"}, headers=hdrs, timeout=30)
+        r.raise_for_status()
+        data = r.json()
+        block = data.get("assets") or {}
+        items = (block.get("items") if isinstance(block, dict) else None) or data.get("items") or []
+        out.extend(items)
+        if len(items) < size:
+            break
+        page += 1
+    return out
+
+
 def _fetch_assets(query: dict, ts_field: str, label: str) -> list[tuple[str, str]]:
     url = f"{IMMICH_URL}/api/search/metadata"
     hdrs = {**headers(), "Content-Type": "application/json"}
