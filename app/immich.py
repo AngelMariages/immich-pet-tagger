@@ -3,6 +3,7 @@ Async functions are used by the API routes."""
 
 import logging
 import os
+import threading
 
 import httpx
 import requests
@@ -11,6 +12,10 @@ log = logging.getLogger("immich")
 
 IMMICH_URL = os.environ.get("IMMICH_URL", "http://immich-server:2283").rstrip("/")
 IMMICH_API_KEY = os.environ.get("IMMICH_API_KEY", "")
+
+# When set, this Immich tag is applied to an asset every time a face is written to it,
+# so tagged photos can be reviewed in Immich. Empty means the feature is off.
+REVIEW_TAG = os.environ.get("TAG_NAME", "").strip()
 
 FACE_BOX_SIZE = 256
 
@@ -35,6 +40,183 @@ def get_owner_id() -> str | None:
 
 
 # ---------------------------------------------------------------------------
+# Review tag
+#
+# The tag id is resolved once (creating the tag if it does not exist) and cached
+# for the process lifetime. Applying it is a single PUT per asset issued inline
+# with the face creation, so a face and its review tag always land together --
+# nothing is batched or deferred to a later pass.
+#
+# The lock is not needed for correctness (the upsert is idempotent) -- it just
+# keeps the poller's SCAN_WORKERS threads, which all reach their first face at
+# once, from firing SCAN_WORKERS identical upserts. Resolution is attempted
+# exactly once either way: a failure is cached too, so a bad API key disables
+# tagging with one warning instead of stalling every worker on a doomed call.
+# Scans run in a short-lived subprocess, so the next scan retries from scratch.
+# ---------------------------------------------------------------------------
+
+_review_tag_id: str | None = None
+_review_tag_resolved = False
+_review_tag_lock = threading.Lock()
+
+
+def _tag_id_from_upsert(payload) -> str | None:
+    """Pick our tag out of a TagResponseDto list, matching on the full tag path."""
+    if not isinstance(payload, list):
+        return None
+    for tag in payload:
+        if not isinstance(tag, dict):
+            continue
+        if tag.get("value") == REVIEW_TAG or tag.get("name") == REVIEW_TAG:
+            return tag.get("id")
+    if len(payload) == 1 and isinstance(payload[0], dict):
+        return payload[0].get("id")
+    return None
+
+
+def _remember_review_tag(tag_id: str | None) -> str | None:
+    """Cache the outcome of a resolution attempt, success or failure."""
+    global _review_tag_id, _review_tag_resolved
+    _review_tag_id = tag_id
+    _review_tag_resolved = True
+    if tag_id:
+        log.info(f"Review tag '{REVIEW_TAG}' -> {tag_id}")
+    else:
+        log.warning(f"Could not resolve review tag '{REVIEW_TAG}'; assets will not be tagged.")
+    return tag_id
+
+
+def resolve_review_tag_id_sync() -> str | None:
+    """Return the id of REVIEW_TAG, creating the tag on first use. None if disabled/failed."""
+    if not REVIEW_TAG:
+        return None
+    if _review_tag_resolved:
+        return _review_tag_id
+    with _review_tag_lock:
+        if _review_tag_resolved:
+            return _review_tag_id
+        try:
+            r = requests.put(
+                f"{IMMICH_URL}/api/tags",
+                json={"tags": [REVIEW_TAG]},
+                headers={**headers(), "Content-Type": "application/json"},
+                timeout=15,
+            )
+            if r.status_code in (200, 201):
+                return _remember_review_tag(_tag_id_from_upsert(r.json()))
+            log.warning(f"review tag upsert -> {r.status_code}: {r.text[:200]}")
+        except Exception as e:
+            log.warning(f"review tag upsert failed: {e}")
+        return _remember_review_tag(None)
+
+
+async def resolve_review_tag_id(client: httpx.AsyncClient) -> str | None:
+    """Async twin of resolve_review_tag_id_sync, sharing the same cached outcome.
+    No lock here: the API routes await face creation one asset at a time, so there
+    is no concurrent first call to collapse."""
+    if not REVIEW_TAG:
+        return None
+    if _review_tag_resolved:
+        return _review_tag_id
+    try:
+        resp = await client.put(
+            f"{IMMICH_URL}/api/tags",
+            json={"tags": [REVIEW_TAG]},
+            headers={**headers(), "Content-Type": "application/json"},
+            timeout=15,
+        )
+        if resp.status_code in (200, 201):
+            return _remember_review_tag(_tag_id_from_upsert(resp.json()))
+        log.warning(f"review tag upsert -> {resp.status_code}: {resp.text[:200]}")
+    except Exception as e:
+        log.warning(f"review tag upsert failed: {e}")
+    return _remember_review_tag(None)
+
+
+def _log_tag_result(asset_id: str, payload) -> None:
+    """Immich answers with a per-id result list; 'duplicate' just means already tagged."""
+    if isinstance(payload, list):
+        for item in payload:
+            if isinstance(item, dict) and not item.get("success") and item.get("error") != "duplicate":
+                log.warning(f"review tag on {asset_id}: {item.get('error')}")
+
+
+def apply_review_tag_sync(asset_id: str) -> None:
+    """Tag asset_id with REVIEW_TAG (no-op when unset). Never raises: a tagging
+    failure must not undo or fail the face that was just created."""
+    tag_id = resolve_review_tag_id_sync()
+    if not tag_id:
+        return
+    try:
+        r = requests.put(
+            f"{IMMICH_URL}/api/tags/{tag_id}/assets",
+            json={"ids": [asset_id]},
+            headers={**headers(), "Content-Type": "application/json"},
+            timeout=15,
+        )
+        if r.status_code != 200:
+            log.warning(f"review tag on {asset_id} -> {r.status_code}: {r.text[:200]}")
+            return
+        _log_tag_result(asset_id, r.json())
+    except Exception as e:
+        log.warning(f"review tag on {asset_id} failed: {e}")
+
+
+async def apply_review_tag(client: httpx.AsyncClient, asset_id: str) -> None:
+    """Async twin of apply_review_tag_sync."""
+    tag_id = await resolve_review_tag_id(client)
+    if not tag_id:
+        return
+    try:
+        resp = await client.put(
+            f"{IMMICH_URL}/api/tags/{tag_id}/assets",
+            json={"ids": [asset_id]},
+            headers={**headers(), "Content-Type": "application/json"},
+            timeout=15,
+        )
+        if resp.status_code != 200:
+            log.warning(f"review tag on {asset_id} -> {resp.status_code}: {resp.text[:200]}")
+            return
+        _log_tag_result(asset_id, resp.json())
+    except Exception as e:
+        log.warning(f"review tag on {asset_id} failed: {e}")
+
+
+async def remove_review_tag(client: httpx.AsyncClient, asset_id: str) -> None:
+    """Strip REVIEW_TAG from asset_id, undoing apply_review_tag. No-op when unset or never
+    resolved (nothing to remove either way). Never raises: caller has already removed the
+    face that prompted this and must not fail because of a tagging cleanup issue."""
+    if not REVIEW_TAG or not _review_tag_id:
+        return
+    try:
+        resp = await client.request(
+            "DELETE",
+            f"{IMMICH_URL}/api/tags/{_review_tag_id}/assets",
+            json={"ids": [asset_id]},
+            headers={**headers(), "Content-Type": "application/json"},
+            timeout=15,
+        )
+        if resp.status_code != 200:
+            log.warning(f"review tag removal on {asset_id} -> {resp.status_code}: {resp.text[:200]}")
+            return
+        _log_tag_result(asset_id, resp.json())
+    except Exception as e:
+        log.warning(f"review tag removal on {asset_id} failed: {e}")
+
+
+async def delete_face(client: httpx.AsyncClient, face_id: str, asset_id: str, untag: bool = True) -> int:
+    """Delete a face and, right here, remove its review tag. Paired in one call (mirroring
+    post_face's create+apply pairing) so a caller can never delete a face and forget the tag.
+    untag=False lets the caller skip removal when another pet's face still covers the asset."""
+    resp = await client.request(
+        "DELETE", f"{IMMICH_URL}/api/faces/{face_id}", headers=headers(), json={"force": True},
+    )
+    if resp.status_code in (200, 204) and untag:
+        await remove_review_tag(client, asset_id)
+    return resp.status_code
+
+
+# ---------------------------------------------------------------------------
 # Sync (poller)
 # ---------------------------------------------------------------------------
 
@@ -51,6 +233,31 @@ def fetch_assets_taken_after(taken_after_iso: str, taken_before_iso: str | None 
     if taken_before_iso:
         query["takenBefore"] = taken_before_iso
     return _fetch_assets(query, ts_field="fileCreatedAt", label="fetch_assets_taken_after")
+
+
+def fetch_assets_in_range(taken_after_iso: str, taken_before_iso: str | None = None) -> list[dict]:
+    """Return raw search/metadata items (id, type, fileCreatedAt, ...) for a date range.
+    Unlike fetch_assets_taken_after, keeps the full item so callers can tell photos from
+    videos (the 'type' field), used by the benchmark analysis."""
+    query: dict = {"takenAfter": taken_after_iso}
+    if taken_before_iso:
+        query["takenBefore"] = taken_before_iso
+    url = f"{IMMICH_URL}/api/search/metadata"
+    hdrs = {**headers(), "Content-Type": "application/json"}
+    out: list[dict] = []
+    page = 1
+    size = 1000
+    while True:
+        r = requests.post(url, json={**query, "page": page, "size": size, "order": "asc"}, headers=hdrs, timeout=30)
+        r.raise_for_status()
+        data = r.json()
+        block = data.get("assets") or {}
+        items = (block.get("items") if isinstance(block, dict) else None) or data.get("items") or []
+        out.extend(items)
+        if len(items) < size:
+            break
+        page += 1
+    return out
 
 
 def _fetch_assets(query: dict, ts_field: str, label: str) -> list[tuple[str, str]]:
@@ -127,6 +334,7 @@ def post_face_sync(asset_id: str, person_id: str, bbox_norm=None, img_size=None)
         if r.status_code not in (200, 201):
             log.warning(f"post_face {asset_id} -> {r.status_code}: {r.text[:200]}")
             return None
+        apply_review_tag_sync(asset_id)
         fr = requests.get(f"{IMMICH_URL}/api/faces", headers=headers(), params={"id": asset_id}, timeout=15)
         if fr.status_code == 200:
             for face in fr.json():
@@ -168,6 +376,7 @@ async def post_face(client: httpx.AsyncClient, asset_id: str, person_id: str, bb
         if resp.status_code not in (200, 201):
             log.warning(f"post_face failed {resp.status_code}: {resp.text[:200]}")
             return None
+        await apply_review_tag(client, asset_id)
         faces_resp = await client.get(f"{IMMICH_URL}/api/faces", headers=headers(), params={"id": asset_id})
         if faces_resp.status_code == 200:
             for face in faces_resp.json():

@@ -1,4 +1,4 @@
-let pets = [], activePet = null, selectedCrops = new Map(), refsItems = [], negIds = [], immichUrl = 'http://localhost:2283', negCandidateMode = false, borderlineMode = false, scanLowConfMode = false, lastClickedKey = null, negGeneration = 0, negPollTimer = null, blGeneration = 0, blPollTimer = null;
+let pets = [], activePet = null, selectedCrops = new Map(), refsItems = [], negIds = [], immichUrl = 'http://localhost:2283', negCandidateMode = false, borderlineMode = false, scanLowConfMode = false, lastClickedKey = null, negGeneration = 0, negPollTimer = null, blGeneration = 0, blPollTimer = null, scanLowConfAssets = [], scanLowConfThreshold = 0.8, scanLowConfFilter = null;
 
 async function api(path, opts = {}) {
   const r = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...opts, body: opts.body ? JSON.stringify(opts.body) : undefined });
@@ -78,7 +78,7 @@ function showGuide() {
       <div class="guide-step"><div class="guide-step-num">2</div><div class="guide-step-body"><div class="guide-step-title">Find reference photos</div><div class="guide-step-desc">Select your pet and click <strong>Find references</strong>. Aim for 20–30 to start; results improve up to around 50.<ul style="margin:6px 0 0 16px;padding:0;"><li><strong>Add to pet</strong>: clear, close-up shot, your pet is the only subject.</li><li><strong>Ignore</strong>: blurry, distant, another person or animal visible alongside your pet, or a look-alike that is not yours. Ignored photos won't appear again.</li><li><strong>Not a pet</strong>: photos that could confuse the classifier. Empty rooms, other species, ambiguous shots. Around 50 is enough.</li></ul>If you already know a specific photo you want to use, click <strong>Add manually</strong> and paste its Immich URL or asset ID.</div></div></div>
       <div class="guide-step"><div class="guide-step-num">3</div><div class="guide-step-body"><div class="guide-step-title">Add "not a pet" samples</div><div class="guide-step-desc">These teach the classifier what not to tag: empty rooms, other animals of a different species, ambiguous shots with no clear subject. Without them, the classifier will tag almost anything. In the <strong>Not a pet</strong> panel, click <strong>Find candidates</strong> to automatically surface more photos that might confuse the classifier. To add a specific photo directly, click <strong>Add manually</strong> and paste its Immich URL or asset ID.</div></div></div>
       <div class="guide-step"><div class="guide-step-num">4</div><div class="guide-step-body"><div class="guide-step-title">Run a test scan</div><div class="guide-step-desc">Set the <strong>Scan from</strong> date 1–2 weeks back and click <strong>Scan</strong>. Review low confidence results: add correct ones as refs, and click <strong>Ignore</strong> on the rest. Ignored photos won't appear again.</div></div></div>
-      <div class="guide-step"><div class="guide-step-num">5</div><div class="guide-step-body"><div class="guide-step-title">Iterate</div><div class="guide-step-desc">Repeat steps 2–4 a couple of times. Results typically stabilize after 2–3 rounds.</div></div></div>
+      <div class="guide-step"><div class="guide-step-num">5</div><div class="guide-step-body"><div class="guide-step-title">Iterate</div><div class="guide-step-desc">Repeat steps 2–4 a couple of times. Results typically stabilize after 2–3 rounds. For a more precise read than eyeballing scan results, use <strong>Tagging accuracy</strong> (📊 icon, top left, or <code>/accuracy.html</code>) to compare against your existing Immich tags and test different thresholds without waiting for a real scan.</div></div></div>
       <div class="guide-step"><div class="guide-step-num">6</div><div class="guide-step-body"><div class="guide-step-title">Run the full backfill</div><div class="guide-step-desc">Once happy with accuracy, set the scan date to when you got your pet and run the full scan. After that, new photos are tagged automatically every hour.</div></div></div>
     </div>
   </div>`;
@@ -98,6 +98,7 @@ async function selectPet(name) {
     if (!ok) return;
   }
   negCandidateMode = false; borderlineMode = false; scanLowConfMode = false;
+  document.getElementById('scanFilterBtns').style.display = 'none';
   activePet = pets.find(p => p.name === name);
   clearSearch(); renderSidebar();
   document.getElementById('refsTitle').textContent = name;
@@ -315,6 +316,7 @@ async function submitAddById() {
       // Multiple crops: load into grid so user picks the right animal
       closeAddById();
       negCandidateMode = false; borderlineMode = false; scanLowConfMode = false;
+      document.getElementById('scanFilterBtns').style.display = 'none';
       selectedCrops.clear(); lastClickedKey = null; updateSelUI();
       document.getElementById('resultsLabel').textContent = `${crops.length} pets detected. Select the one to add as reference`;
       document.getElementById('photoGrid').innerHTML = renderPhotoItems(a, 0.8).join('');
@@ -649,30 +651,55 @@ async function viewScanLowConf() {
   scanLowConfMode = true;
   negCandidateMode = false; borderlineMode = false;
   selectedCrops.clear(); lastClickedKey = null;
+  scanLowConfFilter = null;
   const grid = document.getElementById('photoGrid');
   const label = document.getElementById('resultsLabel');
   grid.innerHTML = '<div class="loading" style="grid-column:1/-1">Loading low confidence results…</div>';
   label.textContent = 'Loading…';
+  document.getElementById('scanFilterBtns').style.display = 'none';
   const scanPetBtns = document.getElementById('scanPetBtns');
   scanPetBtns.innerHTML = pets.map(p => `<button class="btn btn-primary" title="Clear, close-up shot, your pet is the only subject.">${p.name}</button>`).join('');
   [...scanPetBtns.children].forEach((btn, i) => { btn.onclick = () => scanAssignSelected(pets[i].name); });
   updateSelUI();
   try {
     const d = await api('/api/scan/low-confidence');
+    scanLowConfAssets = d.assets;
+    scanLowConfThreshold = d.threshold ?? 0.8;
     if (!d.assets.length) {
       label.textContent = 'No low confidence results';
       grid.innerHTML = '<div class="empty" style="grid-column:1/-1; height:200px;"><div class="empty-sub">All results were confident or unknown</div></div>';
       return;
     }
-    label.textContent = `${d.assets.length} low confidence result${d.assets.length !== 1 ? 's' : ''}`;
-    const thr = d.threshold ?? 0.8;
-    const negSet = new Set(negIds);
-    grid.innerHTML = d.assets.flatMap(a => renderPhotoItems(a, thr)).join('');
-    d.assets.forEach(a => { if (negSet.has(a.id)) document.getElementById('th-' + a.id)?.classList.add('is-neg'); });
+    renderScanLowConfFilterBtns();
+    renderScanLowConf();
   } catch(e) {
     label.textContent = 'Failed to load';
     grid.innerHTML = `<div class="empty" style="grid-column:1/-1; height:200px;"><div class="empty-sub">${e.message}</div></div>`;
   }
+}
+
+function renderScanLowConfFilterBtns() {
+  const el = document.getElementById('scanFilterBtns');
+  const counts = new Map();
+  scanLowConfAssets.forEach(a => counts.set(a.pet_name, (counts.get(a.pet_name) || 0) + 1));
+  const petNames = pets.map(p => p.name).filter(n => counts.has(n));
+  el.innerHTML = [
+    `<button class="btn ${scanLowConfFilter === null ? 'btn-primary' : ''}" data-filter-pet="">All (${scanLowConfAssets.length})</button>`,
+    ...petNames.map(n => `<button class="btn ${scanLowConfFilter === n ? 'btn-primary' : ''}" data-filter-pet="${n}">${n} (${counts.get(n)})</button>`)
+  ].join('');
+  [...el.children].forEach(btn => { btn.onclick = () => { scanLowConfFilter = btn.dataset.filterPet || null; renderScanLowConfFilterBtns(); renderScanLowConf(); }; });
+  el.style.display = petNames.length > 1 ? 'flex' : 'none';
+}
+
+function renderScanLowConf() {
+  const grid = document.getElementById('photoGrid');
+  const label = document.getElementById('resultsLabel');
+  selectedCrops.clear(); lastClickedKey = null; updateSelUI();
+  const assets = scanLowConfFilter === null ? scanLowConfAssets : scanLowConfAssets.filter(a => a.pet_name === scanLowConfFilter);
+  label.textContent = `${assets.length} low confidence result${assets.length !== 1 ? 's' : ''}`;
+  const negSet = new Set(negIds);
+  grid.innerHTML = assets.flatMap(a => renderPhotoItems(a, scanLowConfThreshold)).join('');
+  assets.forEach(a => { if (negSet.has(a.id)) document.getElementById('th-' + a.id)?.classList.add('is-neg'); });
 }
 
 async function scanAssignSelected(petName) {

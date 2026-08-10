@@ -95,6 +95,11 @@ async def root():
     return FileResponse(str(BASE_DIR / "static" / "index.html"))
 
 
+@app.get("/accuracy.html")
+async def accuracy_page():
+    return FileResponse(str(BASE_DIR / "static" / "accuracy.html"))
+
+
 if __name__ == "__main__":
     uvicorn.run(
         "main:app",

@@ -23,6 +23,7 @@ Uses CLIP embeddings and a few reference photos you provide. No cloud services, 
 - **Date ranges**: restrict a pet to photos taken within a specific period (useful for pets that have passed away or were adopted later).
 - **Scan controls**: set the scan start date and trigger a scan from the sidebar; the last scan stats are shown live.
 - **Manage pets**: rename a pet, remove it from Pet Tagger only (keeps it and its tags in Immich untouched, so you can re-import later), delete it entirely (also removes the person and all its tags from Immich), or reset its Immich tags (untags every photo but keeps your curated reference photos so you can start tagging fresh).
+- **Tagging accuracy** (📊 icon in the sidebar, or `/accuracy.html`): dry-run classifies a date range and compares it against your existing Immich tags, so you can see recall/false-positive rates and tune thresholds before trusting a full scan.
 
 ## Requirements
 
@@ -42,6 +43,8 @@ Uses CLIP embeddings and a few reference photos you provide. No cloud services, 
   | `face.create` | Writing face entries (the actual tagging) |
   | `face.read` | Checking existing faces on an asset |
   | `face.delete` | Removing face entries on ref removal or pet deletion |
+  | `tag.create` | Only with `TAG_NAME`: creating the review tag on first use |
+  | `tag.asset` | Only with `TAG_NAME`: applying the review tag to tagged photos |
 
 ## Setup
 
@@ -173,6 +176,8 @@ Start with a recent date so the scan covers fewer photos, making it quicker to r
 
 Repeat steps 2–4 a couple of times. Each round of added references and negatives improves accuracy. Results typically stabilize after 2–3 iterations.
 
+If you want a more precise read on accuracy than eyeballing the scan results, use **Tagging accuracy** (📊 icon in the sidebar, or `/accuracy.html`): it dry-runs classification over a date range and compares it against your existing Immich tags, showing recall and false-positive rates broken down by pet, photo/video, and detection confidence, and lets you test different thresholds without waiting for a real scan.
+
 ### Step 6: Run the full backfill
 
 Once you're happy with the accuracy on the test window:
@@ -191,6 +196,7 @@ After that, the background poller runs every hour and tags new photos automatica
 | `IMMICH_URL` | `http://immich-server:2283` | Immich URL for container-to-container communication |
 | `IMMICH_EXTERNAL_URL` | `http://localhost:2283` | Immich URL as seen from your browser, used for links |
 | `IMMICH_API_KEY` | required | Immich API key |
+| `TAG_NAME` | *(unset, `immich-pet-tagger` in docker-compose.yml)* | If set, this Immich tag is applied to a photo every time a face is written to it (background scan, manual scan, or enrolling a reference photo from the UI), giving you a review queue in Immich of everything the tagger touched. Change the value to whatever tag name you prefer, use `/` for a nested tag (e.g. `Pets/Review`), or remove the line to disable it. The tag is created on first use if it does not exist. Applied inline with each face, not batched, so a photo shows up under the tag as soon as it is tagged, and removed again if that face is later removed and no other pet's face remains on the photo. Removing the tag from a photo in Immich is safe — Pet Tagger never reads it back. Only applies going forward: enabling it does not retroactively tag photos faced before it was turned on. |
 | `POLL_INTERVAL` | `3600` | Seconds between background scans. Models are loaded only during a scan and unloaded afterward to save RAM. |
 | `CLIP_MODEL_NAME` | `ViT-B-16` | CLIP model architecture, passed to `open_clip.create_model_and_transforms`. See [open_clip's pretrained list](https://github.com/mlfoundations/open_clip/blob/main/docs/pretrained.md) for valid combinations with `CLIP_PRETRAINED`. Larger models need more RAM/VRAM per `GPU_WORKERS` thread. Embedding caches are namespaced per CLIP/YOLO model combo, so switching is safe and does not affect other models' cached data, but each new combo starts with a cold cache and re-embeds refs and assets on first use. |
 | `CLIP_PRETRAINED` | `openai` | CLIP pretrained weights tag for `CLIP_MODEL_NAME`. |
@@ -201,6 +207,7 @@ After that, the background poller runs every hour and tags new photos automatica
 | `YOLO_BATCH_SIZE` | `32` | Max images per YOLO inference batch. Reduce if you hit GPU out-of-memory errors. |
 | `EMBED_CACHE_SIZE` | `5000` | Max number of embeddings kept in the in-memory LRU cache. Older entries are evicted when the limit is reached. |
 | `THRESHOLD` | `0.8` | Min confidence (0–1) to tag a photo |
+| `YOLO_CONF` | `0.25` (`0.2` in docker-compose.yml) | Min YOLO detection confidence (0–1) to count as a real crop. Lower catches more (small, turned-away, or partially visible pets) but crops get noisier. Below this, tagging falls back to embedding the whole photo instead of a crop. |
 | `LONG_REQUEST_TIMEOUT` | `120` | Max seconds for CPU-heavy UI requests (Find missed, Find candidates, Find references). Responses stream keepalive bytes so browsers do not drop idle connections. |
 
 ---
@@ -242,6 +249,27 @@ driver: amdgpu
 ```
 
 CPU-only works fine for most home libraries. Expect roughly 10x slower processing compared to GPU.
+
+---
+
+## Bigger models (optional)
+
+The default models (`YOLO_MODEL_NAME=yolov8n.pt`, `CLIP_MODEL_NAME=ViT-B-16`/`CLIP_PRETRAINED=openai`) are chosen to run comfortably on CPU, including low-power hardware like a Raspberry Pi. If you have GPU headroom and want to trade resources for accuracy, `YOLO_MODEL_NAME=yolov8s.pt` with `CLIP_MODEL_NAME=ViT-L-14`/`CLIP_PRETRAINED=openai` measured ~40% fewer missed tags and ~13% fewer false positives than the defaults on a real library (see `.claude/decisions.md`). This is opt-in, not the shipped default, for two reasons:
+
+- `ViT-L-14` is roughly 4x the parameters/compute of the default `ViT-B-16`, and needs a larger download (~900MB vs ~350MB) plus more RAM/VRAM per `GPU_WORKERS` thread. That conflicts with the project's CPU-friendly default.
+- The accuracy gain was measured on one library with several hundred reference photos per pet. A classifier with very few refs may not benefit as much from the larger embedding space, since there's less data to fit a good decision boundary with.
+
+In my own personal testing I reached 96% tagging accuracy at a 1.4% false-positive rate using this combo (`yolov8s.pt` + `ViT-L-14`/`openai`), versus the defaults.
+
+If you want to try it, set in `docker-compose.yml`:
+
+```yaml
+- YOLO_MODEL_NAME=yolov8s.pt
+- CLIP_MODEL_NAME=ViT-L-14
+- CLIP_PRETRAINED=openai
+```
+
+Embedding caches are namespaced per model combo, so switching is safe and reversible, it just means a cold cache and re-embedding refs/assets on first use. Use **Tagging accuracy** (📊 icon in the sidebar, or `/accuracy.html`) to compare recall/false-positive rates against your current setup before committing to the switch on a full scan.
 
 ## Limitations
 

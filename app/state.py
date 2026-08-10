@@ -10,6 +10,10 @@ borderline_progress: dict = {"current": 0, "total": 0, "running": False}
 borderline_request_id: int = 0
 manual_scan_result: dict | None = None
 scan_low_conf_assets: list = []
+benchmark_progress: dict = {"current": 0, "total": 0, "running": False}
+benchmark_generation: int = 0
+benchmark_cancel: threading.Event = threading.Event()
+benchmark_result: dict | None = None
 
 # Trained classifier cache shared across API endpoints. Rebuilt only when the
 # set of refs or negatives changes (tracked via fingerprint). Reusing the same

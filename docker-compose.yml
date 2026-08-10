@@ -14,10 +14,12 @@ services:
       - IMMICH_URL=http://immich-server:2283      # name of your Immich container
       - IMMICH_API_KEY=your_api_key_here          # generate in Immich: Account Settings, API Keys. Keep this secret.
       - IMMICH_EXTERNAL_URL=http://localhost:2283 # how your browser reaches Immich
+      - TAG_NAME=immich-pet-tagger               # tag applied to every photo the tagger adds a face to, change or remove freely
       - POLL_INTERVAL=3600
       - GPU_WORKERS=1
       - YOLO_INPUT_SIZE=640
       - THRESHOLD=0.8
+      - YOLO_CONF=0.2
     # Uncomment the section below to enable NVIDIA GPU acceleration.
     # Requires nvidia-container-toolkit: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html
     # For AMD, replace driver: nvidia with driver: amdgpu and use the :rocm image tag above.

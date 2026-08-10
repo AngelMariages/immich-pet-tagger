@@ -20,3 +20,42 @@ def test_advance_ms_result_excludes_source_asset():
     original = "2026-07-25T14:35:03.549Z"
     advanced = poller._advance_ms(original)
     assert advanced > original
+
+
+# ---------------------------------------------------------------------------
+# classify_outcome
+# ---------------------------------------------------------------------------
+
+def test_classify_outcome_unknown():
+    assert poller.classify_outcome("unknown", 0.99, "2026-06-01T00:00:00Z", {}) == "unknown"
+
+
+def test_classify_outcome_out_of_range_beats_low_confidence():
+    """A low-confidence guess for a pet who was not even in range on that date must
+    be dropped as out_of_range, not surfaced as a low-confidence review candidate."""
+    cfg = {"since": "2025-01-01", "until": "2025-12-31"}
+    outcome = poller.classify_outcome("Dobby", 0.67, "2026-06-01T00:00:00Z", cfg, threshold=0.8)
+    assert outcome == "out_of_range"
+
+
+def test_classify_outcome_out_of_range_beats_confident():
+    cfg = {"since": "2025-01-01", "until": "2025-12-31"}
+    outcome = poller.classify_outcome("Dobby", 0.95, "2026-06-01T00:00:00Z", cfg, threshold=0.8)
+    assert outcome == "out_of_range"
+
+
+def test_classify_outcome_low_confidence_when_in_range():
+    cfg = {"since": "2025-01-01", "until": "2027-12-31"}
+    outcome = poller.classify_outcome("Dobby", 0.67, "2026-06-01T00:00:00Z", cfg, threshold=0.8)
+    assert outcome == "low_confidence"
+
+
+def test_classify_outcome_confident_when_in_range():
+    cfg = {"since": "2025-01-01", "until": "2027-12-31"}
+    outcome = poller.classify_outcome("Dobby", 0.95, "2026-06-01T00:00:00Z", cfg, threshold=0.8)
+    assert outcome == "confident"
+
+
+def test_classify_outcome_no_date_bounds_never_out_of_range():
+    outcome = poller.classify_outcome("Dobby", 0.67, "2026-06-01T00:00:00Z", {}, threshold=0.8)
+    assert outcome == "low_confidence"

@@ -11,6 +11,7 @@ from pathlib import Path
 
 import classifier as clf_mod
 import data
+import detector as det
 import embedder as emb
 import immich as imm
 
@@ -51,6 +52,20 @@ def asset_in_range(time_str: str, since: str | None, until: str | None) -> bool:
     if until and d > date.fromisoformat(until):
         return False
     return True
+
+
+def classify_outcome(pet_name: str, prob: float, time_str: str, cfg: dict, threshold: float = THRESHOLD) -> str:
+    """Decide what a single crop's classification means, before any Immich calls.
+    Date range is checked before confidence: a low-confidence guess for a pet who
+    was not even in range on that date must not surface in the low-confidence
+    review queue, it should be dropped outright like an out-of-range confident match is."""
+    if pet_name == "unknown":
+        return "unknown"
+    if not asset_in_range(time_str, cfg.get("since"), cfg.get("until")):
+        return "out_of_range"
+    if prob < threshold:
+        return "low_confidence"
+    return "confident"
 
 
 # ---------------------------------------------------------------------------
@@ -99,8 +114,8 @@ def migrate_ref_bboxes(data_dir: Path) -> None:
 # ---------------------------------------------------------------------------
 
 def run_poll_cycle(data_dir: str, on_date=None, cancel=None, low_conf_out=None, live_counts: dict | None = None, manual: bool = False, scan_until: str | None = None, scan_since: str | None = None) -> None:
-    log.info(f"Poll cycle | threshold={THRESHOLD} manual={manual}")
     dd = Path(data_dir)
+    log.info(f"Poll cycle | threshold={THRESHOLD} yolo_conf={det.YOLO_CONF} manual={manual}")
     now = datetime.now(timezone.utc).isoformat()
     data.write_poll_status(dd, {"status": "running", "started_at": now})
 
@@ -164,6 +179,8 @@ def _run_poll_cycle(dd: Path, counts: dict, on_date=None, cancel=None, low_conf_
         return
 
     latest_ts = max((ts for _, ts in assets), default=last_ts)
+    threshold = THRESHOLD
+    yolo_conf = det.YOLO_CONF
 
     def process_asset(aid: str, time_str: str) -> None:
         if cancel and cancel.is_set():
@@ -177,7 +194,7 @@ def _run_poll_cycle(dd: Path, counts: dict, on_date=None, cancel=None, low_conf_
             with _count_lock:
                 counts["no_thumb"] += 1
             return
-        detected = emb.crop_animals(img)
+        detected = emb.crop_animals(img, conf=yolo_conf)
         if not detected:
             crops = [(None, img)]
         else:
@@ -199,23 +216,24 @@ def _run_poll_cycle(dd: Path, counts: dict, on_date=None, cancel=None, low_conf_
                 continue
 
             pet_name, prob = clf_mod.classify(vec, names, clf, scaler)
+            cfg = config.get(pet_name, {})
+            outcome = classify_outcome(pet_name, prob, time_str, cfg, threshold=threshold)
 
-            if pet_name == "unknown":
+            if outcome == "unknown":
                 with _count_lock:
                     counts["unknown"] += 1
                 continue
 
-            if prob < THRESHOLD:
+            if outcome == "out_of_range":
+                with _count_lock:
+                    counts["out_of_range"] += 1
+                continue
+
+            if outcome == "low_confidence":
                 with _count_lock:
                     counts["low_confidence"] += 1
                 if low_conf_out is not None:
                     low_conf_out.append({"asset_id": aid, "pet_name": pet_name, "prob": prob, "date": time_str[:10], "bbox": list(bbox_norm) if bbox_norm is not None else None})
-                continue
-
-            cfg = config.get(pet_name, {})
-            if not asset_in_range(time_str, cfg.get("since"), cfg.get("until")):
-                with _count_lock:
-                    counts["out_of_range"] += 1
                 continue
 
             person_id = cfg.get("person_id")

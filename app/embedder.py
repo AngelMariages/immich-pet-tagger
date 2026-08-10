@@ -220,19 +220,106 @@ def embed_image(img: Image.Image) -> np.ndarray | None:
     return req.result
 
 
-def crop_animals(img: Image.Image) -> list[tuple[tuple, Image.Image]]:
-    """Detect animals and return (bbox_norm, crop) pairs. Empty list means no animals found."""
+def crop_animals(img: Image.Image, conf: float | None = None, with_conf: bool = False):
+    """Detect animals and return (bbox_norm, crop) pairs, or (bbox_norm, crop, detection_conf)
+    triples if with_conf=True (e.g. to bucket by detection strength, not just presence).
+    Empty list means no animals found. conf overrides YOLO_CONF for this call only, see
+    detector.detect_animals."""
     try:
         from detector import detect_animals
-        boxes = detect_animals(img)
+        detections = detect_animals(img, conf=conf)  # (conf, x1, y1, x2, y2)
     except Exception as e:
         log.warning(f"YOLO detection failed: {e}")
         return []
     w, h = img.size
-    return [
-        (bbox, img.crop((int(bbox[0] * w), int(bbox[1] * h), int(bbox[2] * w), int(bbox[3] * h))))
-        for bbox in boxes
-    ]
+    out = []
+    for det_conf, x1, y1, x2, y2 in detections:
+        bbox = (x1, y1, x2, y2)
+        crop = img.crop((int(x1 * w), int(y1 * h), int(x2 * w), int(y2 * h)))
+        out.append((bbox, crop, det_conf) if with_conf else (bbox, crop))
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Benchmark-only cache: raw thumbnail bytes + unfiltered YOLO detections.
+# Deliberately separate from crops.db, never read or written by production code
+# (poller, borderline, suggestions). crops.db is keyed only by asset_id and
+# assumes production's fixed YOLO_CONF; letting a benchmark run's experimental
+# confidence write there would silently corrupt what real tagging relies on.
+# Bounded in-memory LRUs, no disk persistence: this is ephemeral diagnostic data
+# for one session's benchmark iteration, not something worth surviving a restart.
+# ---------------------------------------------------------------------------
+
+BENCHMARK_CACHE_SIZE = int(os.environ.get("BENCHMARK_CACHE_SIZE", 20000))
+_benchmark_thumb_cache: OrderedDict[str, bytes] = OrderedDict()
+_benchmark_boxes_cache: OrderedDict[str, list] = OrderedDict()
+_benchmark_cache_lock = threading.Lock()
+
+
+def _lru_get(cache: OrderedDict, key):
+    with _benchmark_cache_lock:
+        val = cache.get(key)
+        if val is not None:
+            cache.move_to_end(key)
+        return val
+
+
+def _lru_put(cache: OrderedDict, key, val) -> None:
+    with _benchmark_cache_lock:
+        cache[key] = val
+        cache.move_to_end(key)
+        if len(cache) > BENCHMARK_CACHE_SIZE:
+            cache.popitem(last=False)
+
+
+def _benchmark_fetch_thumbnail(asset_id: str) -> Image.Image | None:
+    cached = _lru_get(_benchmark_thumb_cache, asset_id)
+    if cached is not None:
+        return Image.open(io.BytesIO(cached)).convert("RGB")
+    try:
+        r = requests.get(
+            f"{imm.IMMICH_URL}/api/assets/{asset_id}/thumbnail?size=preview",
+            headers={"x-api-key": imm.IMMICH_API_KEY},
+            timeout=30,
+        )
+        if r.status_code == 200 and r.content:
+            _lru_put(_benchmark_thumb_cache, asset_id, r.content)
+            return Image.open(io.BytesIO(r.content)).convert("RGB")
+    except Exception as e:
+        log.warning(f"fetch_thumbnail {asset_id}: {e}")
+    return None
+
+
+def _benchmark_raw_boxes(asset_id: str, img: Image.Image) -> list:
+    cached = _lru_get(_benchmark_boxes_cache, asset_id)
+    if cached is not None:
+        return cached
+    from detector import _MODEL_CONF_FLOOR, detect_animals
+    boxes = detect_animals(img, conf=_MODEL_CONF_FLOOR)  # every detection YOLO produced
+    _lru_put(_benchmark_boxes_cache, asset_id, boxes)
+    return boxes
+
+
+def crop_animals_cached(asset_id: str, conf: float | None = None, with_conf: bool = False):
+    """Benchmark-only equivalent of crop_animals(): caches the thumbnail and the raw,
+    unfiltered detections per asset_id (see the cache block above), so re-running the
+    benchmark over the same assets with a different `conf` (e.g. comparing several YOLO
+    thresholds) skips the Immich fetch and the YOLO pass entirely, only CLIP embedding
+    of whichever crop the new confidence selects still runs fresh. Returns (img, crops):
+    img is None if the thumbnail could not be fetched (crops is then always [])."""
+    img = _benchmark_fetch_thumbnail(asset_id)
+    if img is None:
+        return None, []
+    from detector import YOLO_CONF
+    effective_conf = conf if conf is not None else YOLO_CONF
+    boxes = sorted((b for b in _benchmark_raw_boxes(asset_id, img) if b[0] >= effective_conf), reverse=True)
+    w, h = img.size
+    out = []
+    for det_conf, x1, y1, x2, y2 in boxes:
+        bbox = (x1, y1, x2, y2)
+        crop = img.crop((int(x1 * w), int(y1 * h), int(x2 * w), int(y2 * h)))
+        out.append((bbox, crop, det_conf) if with_conf else (bbox, crop))
+    return img, out
 
 
 def _crops_to_result(pairs: list[tuple[list, np.ndarray]]) -> list[tuple[dict, np.ndarray]]:

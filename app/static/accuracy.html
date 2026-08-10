@@ -1,0 +1,544 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Tagging accuracy</title>
+<style>
+  body { font-family: -apple-system, Segoe UI, sans-serif; background:#111; color:#eee; margin:0; padding:24px; }
+  h1 { font-weight:600; }
+  h2 { margin-top:32px; font-weight:600; }
+  h3 { margin-top:20px; font-weight:600; color:#ccc; }
+  h3.collapsible { cursor:pointer; user-select:none; }
+  h3.collapsible:hover { color:#eee; }
+  h3.collapsible .arrow { display:inline-block; font-size:10px; width:12px; }
+  .count { color:#888; font-weight:400; font-size:0.8em; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill, 130px); gap:10px; }
+  .card { text-decoration:none; color:#ccc; font-size:11px; text-align:center; }
+  .card img { width:130px; height:130px; object-fit:cover; border-radius:6px; background:#222; display:block; }
+  .card:hover img { outline:2px solid #6cf; }
+  .meta { margin-top:4px; }
+  .badge { display:inline-block; padding:0 4px; border-radius:3px; font-size:10px; }
+  .badge.fallback { background:#533; color:#f99; }
+  .badge.yolo { background:#353; color:#9f9; }
+  p.note { color:#999; max-width:700px; }
+  p.warning { color:#e8a33d; max-width:700px; border-left:3px solid #e8a33d; padding-left:10px; }
+  form { display:flex; gap:8px 16px; align-items:center; margin:16px 0; flex-wrap:wrap; }
+  form .thresholds { display:flex; gap:8px 16px; flex-wrap:wrap; align-items:flex-start; padding:8px 12px; border:1px solid #333; border-radius:6px; }
+  form .thresholds legend, form .thresholds .legend { font-size:11px; color:#888; width:100%; }
+  form .thresholds .field { display:flex; flex-direction:column; align-items:flex-start; gap:3px; width:150px; }
+  form .thresholds .field input { width:64px; }
+  form .thresholds .hint { font-size:10px; color:#888; line-height:1.35; }
+  input, button { font-size:13px; padding:4px 8px; }
+  #status { color:#999; }
+  #configLine { color:#888; font-size:12px; margin-top:8px; }
+  table.stats { border-collapse:collapse; margin-top:12px; font-size:13px; }
+  table.stats th, table.stats td { padding:4px 10px; text-align:right; border-bottom:1px solid #333; }
+  table.stats th:first-child, table.stats td:first-child,
+  table.stats th:nth-child(2), table.stats td:nth-child(2) { text-align:left; }
+  table.stats th { color:#aaa; font-weight:600; }
+  table.stats th.sortable { cursor:pointer; user-select:none; }
+  table.stats th.sortable:hover { color:#eee; }
+  table.stats caption { caption-side:bottom; text-align:left; color:#888; font-size:11px; margin-top:6px; max-width:700px; }
+  .curve-wrap { display:flex; gap:16px; flex-wrap:wrap; margin-top:12px; }
+  .curve-card { border:1px solid #333; border-radius:6px; padding:10px 12px; flex:1 1 320px; min-width:280px; max-width:420px; }
+  .curve-card h4 { margin:0 0 4px; font-size:13px; color:#ddd; }
+  .curve-card .field { margin-bottom:6px; }
+  .curve-card .field input { width:64px; }
+  .curve-svg { cursor:pointer; display:block; }
+  .curve-legend { font-size:10px; color:#888; margin-top:2px; }
+  .curve-legend .recall { color:#6cf; }
+  .curve-legend .extra { color:#f96; }
+  .curve-readout { font-size:12px; color:#ccc; margin-top:6px; }
+  .curve-readout b { color:#fff; }
+</style>
+</head>
+<body>
+<h1>Tagging accuracy</h1>
+<p class="note">Dry-run classifies every photo/video in the given date range and compares against the actual Immich tags. Uses the classifier trained on whatever reference and negative photos are currently set up in the main enrollment page, this page has no separate refs of its own, add or remove refs there and re-run here to see the effect. Pick a date range and a YOLO detection confidence, run it once, then explore CLIP thresholds interactively below, no re-scan needed for that part. A summary table breaks down recall by bucket and pet; below that, only mismatches are shown as thumbnails: Missing (you tagged it, the model didn't) and False positives (the model would tag it, you didn't). Correct agreements aren't shown as thumbnails, only counted in the table.</p>
+<p class="warning">Immich's tags in the scanned range are treated as ground truth. Before running this on a range, make sure every photo/video in it has already been manually tagged, double-checked, and corrected — any date range with un-reviewed or wrong tags will produce misleading Missing/False positive/Recall numbers, since this evaluation can only be as accurate as what it's compared against.</p>
+<form id="runForm">
+  <label>Since <input type="date" id="since" required></label>
+  <label>Until <input type="date" id="until"></label>
+  <div class="thresholds">
+    <label class="field">
+      <span>YOLO confidence floor (0-1) <input type="number" id="benchYoloConf" min="0.01" max="1" step="0.01"></span>
+      <span class="hint">Minimum detection confidence to count as a crop at all, otherwise YOLO fail. Only affects this run, not live detection.</span>
+    </label>
+  </div>
+  <button type="submit">Run evaluation</button>
+  <button type="button" id="stopBtn" style="display:none;">Stop and save what's done</button>
+  <label>or import a saved result <input type="file" id="importFile" accept="application/json"></label>
+</form>
+<div id="status"></div>
+<div id="configLine"></div>
+<div id="curveSection"></div>
+<div id="statsTable"></div>
+<div id="download"></div>
+<div id="sections"></div>
+<script>
+const statusEl = document.getElementById('status');
+const sections = document.getElementById('sections');
+const downloadEl = document.getElementById('download');
+const configEl = document.getElementById('configLine');
+const statsEl = document.getElementById('statsTable');
+const curveEl = document.getElementById('curveSection');
+
+const BENCHMARK_BUCKETS = ['yolo', 'fallback', 'video_yolo', 'video_fallback'];
+
+function bucketParts(bucket) {
+  const isVideo = bucket.startsWith('video_');
+  const rest = isVideo ? bucket.slice('video_'.length) : bucket;
+  const yolo = rest === 'fallback' ? 'Fail' : 'Detected';
+  return {type: isVideo ? 'Videos' : 'Photos', yolo};
+}
+
+function bucketTier(bucket) {
+  return (bucket === 'fallback' || bucket === 'video_fallback') ? 'fallback_bucket' : 'yolo';
+}
+
+function renderConfig(cfg) {
+  if (!cfg) { configEl.textContent = ''; return; }
+  const yoloConfText = cfg.yolo_conf !== undefined ? `, YOLO conf floor ${cfg.yolo_conf}` : '';
+  let text = `Models used: CLIP ${cfg.clip_model} (${cfg.clip_pretrained}), YOLO ${cfg.yolo_model} @ ${cfg.yolo_input_size}px${yoloConfText}, range ${cfg.since} to ${cfg.until || 'today'}. CLIP threshold is picked below, per bucket, after the run.`;
+  if (cfg.partial) {
+    text += ` Stopped early: only ${cfg.assets_scanned}/${cfg.assets_total} assets in range were scanned, so these numbers are a partial sample, not the full range.`;
+  }
+  configEl.textContent = text;
+}
+
+// ---------------------------------------------------------------------------
+// Threshold explorer: the CLIP threshold is never sent to the server. It's just a
+// cutoff compared against scores the run already collected, so both buckets' stats
+// table, thumbnail grids, and charts below are all derived client-side from
+// result.curve at whatever threshold is currently picked, no re-run needed to test
+// a different value. YOLO confidence is the one parameter that does need a re-run,
+// since it changes what gets embedded in the first place, so it stays a plain
+// pre-run field above.
+// ---------------------------------------------------------------------------
+
+const SWEEP_MIN = 0.3;   // matches the backend's SWEEP_SCORE_FLOOR, scores below this
+                          // aren't collected for non-ground-truth assets.
+const SWEEP_MAX = 0.99;
+const SWEEP_STEP = 0.01;
+const DEFAULT_THRESHOLD = 0.8;
+
+const TIER_META = [
+  {key: 'yolo', label: 'YOLO detected', buckets: ['yolo', 'video_yolo']},
+  {key: 'fallback_bucket', label: 'YOLO fail', buckets: ['fallback', 'video_fallback']},
+];
+
+let lastResult = null;   // raw {config, curve} from the server/import
+let tierThresholds = {yolo: DEFAULT_THRESHOLD, fallback_bucket: DEFAULT_THRESHOLD};
+
+function mergeCurveItems(curve, buckets) {
+  const gt = [], extra = [];
+  for (const b of buckets) {
+    const byPet = (curve && curve[b]) || {};
+    for (const pet of Object.values(byPet)) {
+      if (pet.gt) gt.push(...pet.gt);
+      if (pet.extra) extra.push(...pet.extra);
+    }
+  }
+  return {gt, extra};
+}
+
+function countAtLeast(items, t) {
+  let n = 0;
+  for (const it of items) if (it.score >= t) n++;
+  return n;
+}
+
+function sweepPoints(items) {
+  const points = [];
+  const gtTotal = items.gt.length;
+  for (let t = SWEEP_MIN; t <= SWEEP_MAX + 1e-9; t += SWEEP_STEP) {
+    const tt = Math.round(t * 100) / 100;
+    const gtHit = countAtLeast(items.gt, tt);
+    const extraCount = countAtLeast(items.extra, tt);
+    // False-positive rate relative to ground truth in this bucket (matches the
+    // "extra-rate" convention already used in .claude/decisions.md), not a raw count:
+    // a bucket with more ground truth naturally sees more absolute false positives,
+    // so the rate is what's actually comparable across different YOLO/CLIP configs.
+    points.push({
+      t: tt, gtHit, gtTotal, extraCount,
+      recall: gtTotal ? (100 * gtHit / gtTotal) : null,
+      extraRate: gtTotal ? (100 * extraCount / gtTotal) : null,
+    });
+  }
+  return points;
+}
+
+function _axisRange(vals) {
+  // Zooms each axis to its own data range instead of a fixed 0-100%: recall in
+  // particular often sits in a narrow high band (e.g. 85-99%) across the whole sweep,
+  // and a fixed 0-100% axis would flatten that entire shape into a sliver at the top.
+  // A small padding keeps the line off the very top/bottom edge; a minimum span guards
+  // against a flat line (min === max) producing a zero-height range.
+  if (!vals.length) return [0, 1];
+  const mn = Math.min(...vals), mx = Math.max(...vals);
+  const span = Math.max(mx - mn, 0.5);
+  const pad = span * 0.1;
+  return [Math.max(0, mn - pad), mx + pad];
+}
+
+function chartSvg(tier, points, threshold) {
+  const w = 400, h = 140, padL = 30, padR = 34, padT = 8, padB = 18;
+  const plotW = w - padL - padR, plotH = h - padT - padB;
+  const xForT = t => padL + (t - SWEEP_MIN) / (SWEEP_MAX - SWEEP_MIN) * plotW;
+  // Recall and false-positive rate live on separate y-scales, each zoomed to its own
+  // min/max across the sweep (see _axisRange), not a shared or fixed 0-100% axis:
+  // sharing one axis would squash the FP-rate line into a barely-visible sliver near
+  // the bottom, and fixing either to 0-100% wastes most of the chart's height when the
+  // actual values cluster in a narrow band.
+  const [rMin, rMax] = _axisRange(points.map(p => p.recall).filter(v => v !== null));
+  const [eMin, eMax] = _axisRange(points.map(p => p.extraRate).filter(v => v !== null));
+  const yForRecall = r => padT + (1 - ((r ?? rMin) - rMin) / (rMax - rMin)) * plotH;
+  const yForExtra = e => padT + (1 - ((e ?? eMin) - eMin) / (eMax - eMin)) * plotH;
+  const path = (fn) => points.map((p, i) => `${i === 0 ? 'M' : 'L'}${xForT(p.t).toFixed(1)},${fn(p).toFixed(1)}`).join(' ');
+  const recallPath = path(p => yForRecall(p.recall));
+  const extraPath = path(p => yForExtra(p.extraRate));
+  const mx = xForT(Math.min(Math.max(threshold, SWEEP_MIN), SWEEP_MAX)).toFixed(1);
+  return `<svg viewBox="0 0 ${w} ${h}" class="curve-svg" data-tier="${tier}">
+    <line x1="${padL}" y1="${padT}" x2="${padL}" y2="${h - padB}" stroke="#444"/>
+    <line x1="${padL}" y1="${h - padB}" x2="${w - padR}" y2="${h - padB}" stroke="#444"/>
+    <path d="${recallPath}" fill="none" stroke="#6cf" stroke-width="1.5"/>
+    <path d="${extraPath}" fill="none" stroke="#f96" stroke-width="1.5" stroke-dasharray="3,2"/>
+    <line class="marker" x1="${mx}" y1="${padT}" x2="${mx}" y2="${h - padB}" stroke="#eee" stroke-dasharray="2,2"/>
+    <text x="2" y="${padT + 8}" font-size="9" fill="#6cf">${rMax.toFixed(1)}%</text>
+    <text x="2" y="${h - padB}" font-size="9" fill="#6cf">${rMin.toFixed(1)}%</text>
+    <text x="${w - 2}" y="${padT + 8}" font-size="9" fill="#f96" text-anchor="end">${eMax.toFixed(1)}%</text>
+    <text x="${w - 2}" y="${h - padB}" font-size="9" fill="#f96" text-anchor="end">${eMin.toFixed(1)}%</text>
+    <text x="${padL}" y="${h - 4}" font-size="9" fill="#888">${SWEEP_MIN.toFixed(2)}</text>
+    <text x="${w - padR}" y="${h - 4}" font-size="9" fill="#888" text-anchor="end">${SWEEP_MAX.toFixed(2)}</text>
+  </svg>`;
+}
+
+function nearestPoint(points, t) {
+  const tt = Math.min(Math.max(Math.round(t * 100) / 100, SWEEP_MIN), SWEEP_MAX);
+  return points.find(p => Math.abs(p.t - tt) < 1e-9) || points[points.length - 1];
+}
+
+// The threshold <input> for each tier is created once per result (buildCurveCards)
+// and never replaced afterward, only its sibling chart/readout are, so typing in it
+// doesn't lose focus or cursor position on every keystroke.
+function buildCurveCards(curve) {
+  curveEl.innerHTML = `<h2>Threshold explorer</h2>
+    <p class="note">This is where you pick your tradeoff between recall (how many of your real tags get caught) and false positives (wrong tags you'd have to clean up), per bucket. A higher threshold means fewer false positives but lower recall (stricter, misses more real tags); a lower threshold means higher recall but more false positives (looser, catches more but also more mistakes). Sweeps every CLIP threshold from 0.30 to 0.99 using the scores this run already collected. Click a chart, or type a value, to set that bucket's threshold, everything below (including the stats table and thumbnail grids) updates to match, no re-run needed.</p>
+    <div class="curve-wrap">${TIER_META.map(meta => `
+      <div class="curve-card" data-tier="${meta.key}">
+        <h4>${meta.label}</h4>
+        <label class="field">CLIP threshold <input type="number" id="th_${meta.key}" min="0.01" max="1" step="0.01" value="${tierThresholds[meta.key]}"></label>
+        <div class="chart-holder"></div>
+        <div class="curve-legend"><span class="recall">— recall %</span> &nbsp; <span class="extra">- - false positive rate %</span></div>
+        <div class="curve-readout"></div>
+      </div>`).join('')}</div>`;
+
+  for (const meta of TIER_META) {
+    const card = curveEl.querySelector(`.curve-card[data-tier="${meta.key}"]`);
+    const input = card.querySelector(`#th_${meta.key}`);
+    input.addEventListener('input', () => {
+      const v = parseFloat(input.value);
+      if (!isNaN(v)) { tierThresholds[meta.key] = v; renderDerived(); }
+    });
+  }
+}
+
+function updateCurveCard(meta, curve) {
+  const card = curveEl.querySelector(`.curve-card[data-tier="${meta.key}"]`);
+  if (!card) return;
+  const items = mergeCurveItems(curve, meta.buckets);
+  const points = sweepPoints(items);
+  const threshold = tierThresholds[meta.key];
+  const svg = chartSvg(meta.key, points, threshold);
+  const holder = card.querySelector('.chart-holder');
+  holder.innerHTML = svg;
+  holder.querySelector('.curve-svg').addEventListener('click', (e) => {
+    const target = e.currentTarget;
+    const rect = target.getBoundingClientRect();
+    const viewBox = target.viewBox.baseVal;
+    const xInSvg = (e.clientX - rect.left) / rect.width * viewBox.width;
+    const padL = 30, padR = 30, w = 400;
+    const frac = Math.min(Math.max((xInSvg - padL) / (w - padL - padR), 0), 1);
+    const t = Math.round((SWEEP_MIN + frac * (SWEEP_MAX - SWEEP_MIN)) * 100) / 100;
+    tierThresholds[meta.key] = t;
+    card.querySelector(`#th_${meta.key}`).value = t.toFixed(2);
+    renderDerived();
+  });
+
+  const p = nearestPoint(points, threshold);
+  const readout = items.gt.length
+    ? `At <b>${p.t.toFixed(2)}</b>: recall <b>${p.recall.toFixed(1)}%</b>, false positive rate <b>${p.extraRate.toFixed(1)}%</b>.`
+    : `No ground truth in this bucket.`;
+  card.querySelector('.curve-readout').innerHTML = readout;
+}
+
+// ---------------------------------------------------------------------------
+// Stats table
+// ---------------------------------------------------------------------------
+
+const STATS_COLUMNS = [
+  {label: 'Type', key: 'type'},
+  {label: 'YOLO', key: 'yolo'},
+  {label: 'Pet', key: 'pet'},
+  {label: 'Ground truth', key: 'gt'},
+  {label: 'Correct', key: 'correct'},
+  {label: 'Missing', key: 'missing'},
+  {label: 'False positive', key: 'extra'},
+  {label: 'FP rate', key: 'extra_rate_pct'},
+  {label: 'Recall', key: 'recall_pct'},
+];
+let statsSort = {key: 'bucket', dir: 1};
+
+function statsRowValue(s, key) {
+  const parts = bucketParts(s.bucket);
+  if (key === 'type') return parts.type;
+  if (key === 'yolo') return parts.yolo;
+  return s[key];
+}
+
+function computeStats(curve) {
+  const stats = [];
+  for (const bucket of BENCHMARK_BUCKETS) {
+    const th = tierThresholds[bucketTier(bucket)];
+    const byPet = (curve && curve[bucket]) || {};
+    for (const [pet, {gt, extra}] of Object.entries(byPet)) {
+      const gtCount = gt.length;
+      const correct = countAtLeast(gt, th);
+      const extraCount = countAtLeast(extra, th);
+      stats.push({
+        bucket, pet, gt: gtCount, correct, missing: gtCount - correct, extra: extraCount,
+        recall_pct: gtCount ? Math.round(1000 * correct / gtCount) / 10 : null,
+        extra_rate_pct: gtCount ? Math.round(1000 * extraCount / gtCount) / 10 : null,
+      });
+    }
+  }
+  return stats;
+}
+
+function renderStats(stats) {
+  if (!stats.length) { statsEl.innerHTML = ''; return; }
+
+  const sorted = [...stats].sort((a, b) => {
+    const av = statsRowValue(a, statsSort.key);
+    const bv = statsRowValue(b, statsSort.key);
+    if (av === null) return 1;
+    if (bv === null) return -1;
+    if (av < bv) return -statsSort.dir;
+    if (av > bv) return statsSort.dir;
+    return 0;
+  });
+
+  const rows = sorted.map(s => {
+    const parts = bucketParts(s.bucket);
+    return `
+    <tr>
+      <td>${parts.type}</td>
+      <td>${parts.yolo}</td>
+      <td>${s.pet}</td>
+      <td>${s.gt}</td>
+      <td>${s.correct}</td>
+      <td>${s.missing}</td>
+      <td>${s.extra}</td>
+      <td>${s.extra_rate_pct === null ? '-' : s.extra_rate_pct + '%'}</td>
+      <td>${s.recall_pct === null ? '-' : s.recall_pct + '%'}</td>
+    </tr>`;
+  }).join('');
+
+  const headers = STATS_COLUMNS.map(c => {
+    const arrow = statsSort.key === c.key ? (statsSort.dir === 1 ? ' &#9650;' : ' &#9660;') : '';
+    return `<th class="sortable" data-key="${c.key}">${c.label}${arrow}</th>`;
+  }).join('');
+
+  statsEl.innerHTML = `
+    <table class="stats">
+      <caption>
+        <b>Ground truth</b>: how many assets in this bucket you've actually tagged with this pet. <b>Correct</b>: the model agrees (score above threshold). <b>Missing</b>: you tagged it but the model scored it below threshold, a real miss. <b>False positive</b>: the model scored it above threshold but you haven't tagged it there, either a real false tag or one you just haven't gotten to yet. <b>FP rate</b>: False positive / Ground truth, use this (not the raw count) to compare buckets or configs of different sizes. <b>Recall</b>: Correct / Ground truth, the percentage of your real tags the model would also catch. Thresholds come from the threshold explorer above. Click a column header to sort.
+      </caption>
+      <thead><tr>${headers}</tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+
+  statsEl.querySelectorAll('th.sortable').forEach(th => {
+    th.addEventListener('click', () => {
+      const key = th.dataset.key;
+      statsSort.dir = (statsSort.key === key) ? -statsSort.dir : 1;
+      statsSort.key = key;
+      renderStats(computeStats(lastResult.curve));
+    });
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Missing/extra thumbnail grids
+// ---------------------------------------------------------------------------
+
+function badge(item) {
+  if (!item.yolo_detected) return '<span class="badge fallback">fallback</span>';
+  return `<span class="badge yolo">YOLO ${item.det_conf ?? ''}</span>`;
+}
+
+function computeMissingExtra(curve) {
+  const missing = {}, extra = {};
+  for (const bucket of BENCHMARK_BUCKETS) {
+    const th = tierThresholds[bucketTier(bucket)];
+    const byPet = (curve && curve[bucket]) || {};
+    for (const [pet, {gt, extra: extraItems}] of Object.entries(byPet)) {
+      (missing[pet] = missing[pet] || []).push(...gt.filter(it => it.score < th));
+      (extra[pet] = extra[pet] || []).push(...extraItems.filter(it => it.score >= th));
+    }
+  }
+  for (const pet in missing) missing[pet].sort((a, b) => b.score - a.score);
+  for (const pet in extra) extra[pet].sort((a, b) => b.score - a.score);
+  return {missing, extra};
+}
+
+function renderSections(missing, extra) {
+  sections.innerHTML = '';
+  for (const [title, byPet] of [['False positives (model would tag, not tagged)', extra], ['Missing (you tagged, model missed)', missing]]) {
+    const section = document.createElement('div');
+    section.innerHTML = `<h2>${title}</h2>`;
+    for (const [pet, items] of Object.entries(byPet)) {
+      if (!items.length) continue;
+      const grid = document.createElement('div');
+      grid.className = 'grid';
+      const h3 = document.createElement('h3');
+      h3.className = 'collapsible';
+      h3.innerHTML = `<span class="arrow">&#9660;</span> ${pet} <span class="count">(${items.length})</span>`;
+      h3.addEventListener('click', () => {
+        const collapsed = grid.style.display === 'none';
+        grid.style.display = collapsed ? '' : 'none';
+        h3.querySelector('.arrow').innerHTML = collapsed ? '&#9660;' : '&#9654;';
+      });
+      section.appendChild(h3);
+      for (const item of items) {
+        const a = document.createElement('a');
+        a.className = 'card';
+        a.href = `${window._immichUrl || ''}/photos/${item.asset_id}`;
+        a.target = '_blank';
+        a.innerHTML = `<img src="/api/thumb/${item.asset_id}" loading="lazy"><div class="meta">${(item.score * 100).toFixed(0)}% ${badge(item)}</div><div class="meta">${item.date}</div>`;
+        grid.appendChild(a);
+      }
+      section.appendChild(grid);
+    }
+    sections.appendChild(section);
+  }
+}
+
+// Recomputes and redraws everything that depends on the currently-picked thresholds
+// (both curve cards, the stats table, and the thumbnail grids), without touching the
+// threshold <input> elements themselves.
+function renderDerived() {
+  if (!lastResult) return;
+  const curve = lastResult.curve || {};
+  for (const meta of TIER_META) updateCurveCard(meta, curve);
+  renderStats(computeStats(curve));
+  const {missing, extra} = computeMissingExtra(curve);
+  renderSections(missing, extra);
+}
+
+document.getElementById('importFile').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const result = JSON.parse(await file.text());
+  // Push to the server too, so the download link (server-rendered, not a client blob URL)
+  // can serve this result back. Some browsers don't reliably honor <a download> on blob
+  // URLs, silently saving with the blob's internal id and no extension instead.
+  await fetch('/api/analysis/benchmark/result', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(result),
+  });
+  statusEl.textContent = `Imported ${file.name}.`;
+  render(result);
+});
+
+function showDownloadLink() {
+  downloadEl.innerHTML = `<a href="/api/analysis/benchmark/download">Download this result</a> (re-import it later to skip re-running)`;
+}
+
+const stopBtn = document.getElementById('stopBtn');
+
+document.getElementById('runForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const since = document.getElementById('since').value;
+  const until = document.getElementById('until').value;
+  if (!since) return;
+  const yoloConfRaw = document.getElementById('benchYoloConf').value;
+  const resp = await fetch('/api/analysis/benchmark', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      since, until: until || null,
+      yolo_conf: yoloConfRaw ? parseFloat(yoloConfRaw) : null,
+    }),
+  });
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}));
+    statusEl.textContent = 'Error: ' + (err.detail || resp.status);
+    return;
+  }
+  poll();
+});
+
+stopBtn.addEventListener('click', async () => {
+  stopBtn.disabled = true;
+  stopBtn.textContent = 'Stopping…';
+  await fetch('/api/analysis/benchmark/stop', {method: 'POST'});
+});
+
+function render(result) {
+  lastResult = result;
+  showDownloadLink();
+  renderConfig(result.config);
+  buildCurveCards(result.curve || {});
+  renderDerived();
+}
+
+async function poll() {
+  const resp = await fetch('/api/analysis/benchmark');
+  const data = await resp.json();
+  const p = data.progress;
+  if (p.running) {
+    stopBtn.style.display = '';
+    stopBtn.disabled = false;
+    stopBtn.textContent = "Stop and save what's done";
+    statusEl.textContent = `Running: ${p.current}/${p.total}`;
+    setTimeout(poll, 3000);
+  } else if (data.result) {
+    stopBtn.style.display = 'none';
+    render(data.result);
+    const {missing, extra} = computeMissingExtra(data.result.curve || {});
+    const totalMissing = Object.values(missing).reduce((s, l) => s + l.length, 0);
+    const totalExtra = Object.values(extra).reduce((s, l) => s + l.length, 0);
+    const partial = data.result.config && data.result.config.partial;
+    const prefix = partial
+      ? `Stopped early (${data.result.config.assets_scanned}/${data.result.config.assets_total} scanned).`
+      : 'Done.';
+    statusEl.textContent = `${prefix} ${totalMissing} missing, ${totalExtra} false positives at the current thresholds.`;
+  }
+}
+
+// Load immich URL for links, prefill YOLO confidence and starting CLIP thresholds from
+// the live production settings, and show any already-completed result on page load.
+async function init() {
+  const cfg = await (await fetch('/api/config')).json();
+  window._immichUrl = cfg.immich_external_url || '';
+  const settings = await (await fetch('/api/settings')).json();
+  document.getElementById('benchYoloConf').value = settings.yolo_conf;
+  if (settings.threshold !== undefined) {
+    tierThresholds = {yolo: settings.threshold, fallback_bucket: settings.threshold};
+  }
+  const resp = await fetch('/api/analysis/benchmark');
+  const data = await resp.json();
+  if (data.progress.running) {
+    stopBtn.style.display = '';
+    statusEl.textContent = `Running: ${data.progress.current}/${data.progress.total}`;
+    poll();
+  } else if (data.result) {
+    render(data.result);
+  }
+}
+init();
+</script>
+</body>
+</html>
