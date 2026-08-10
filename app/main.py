@@ -95,9 +95,9 @@ async def root():
     return FileResponse(str(BASE_DIR / "static" / "index.html"))
 
 
-@app.get("/benchmark.html")
-async def benchmark_page():
-    return FileResponse(str(BASE_DIR / "static" / "benchmark.html"))
+@app.get("/accuracy.html")
+async def accuracy_page():
+    return FileResponse(str(BASE_DIR / "static" / "accuracy.html"))
 
 
 if __name__ == "__main__":
