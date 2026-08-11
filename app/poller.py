@@ -167,8 +167,13 @@ def _run_poll_cycle(dd: Path, counts: dict, on_date=None, cancel=None, low_conf_
     t0 = time.time()
     if manual:
         taken_before = (scan_until + "T23:59:59.999Z") if scan_until else None
-        assets = imm.fetch_assets_taken_after(last_ts, taken_before)
+        # (asset_id, taken_ts) - manual scans have no cursor to advance, so the taken date
+        # doubles as both the range-check timestamp and the (unused) cursor value.
+        assets = [(aid, ts, ts) for aid, ts in imm.fetch_assets_taken_after(last_ts, taken_before)]
     else:
+        # (asset_id, cursor_ts, taken_ts) - cursor_ts (createdAt/upload time) advances the
+        # scan window; taken_ts (fileCreatedAt/EXIF date) is what since/until must be checked
+        # against, since a late-imported old photo can have a recent createdAt.
         assets = imm.fetch_assets_created_after(last_ts)
     log.info(f"Fetched {len(assets)} assets in {time.time()-t0:.1f}s")
 
@@ -178,7 +183,7 @@ def _run_poll_cycle(dd: Path, counts: dict, on_date=None, cancel=None, low_conf_
             data.save_last_timestamp(datetime.now(timezone.utc).isoformat(), dd)
         return
 
-    latest_ts = max((ts for _, ts in assets), default=last_ts)
+    latest_ts = max((cursor_ts for _, cursor_ts, _ in assets), default=last_ts)
     threshold = THRESHOLD
     yolo_conf = det.YOLO_CONF
 
@@ -272,7 +277,7 @@ def _run_poll_cycle(dd: Path, counts: dict, on_date=None, cancel=None, low_conf_
     log.info(f"Processing {len(assets)} assets with {emb.SCAN_WORKERS} workers")
     t0 = time.time()
     with ThreadPoolExecutor(max_workers=emb.SCAN_WORKERS) as executor:
-        futures = {executor.submit(process_asset, aid, ts): aid for aid, ts in assets}
+        futures = {executor.submit(process_asset, aid, taken_ts): aid for aid, _, taken_ts in assets}
         for future in as_completed(futures):
             if cancel and cancel.is_set():
                 executor.shutdown(wait=False, cancel_futures=True)

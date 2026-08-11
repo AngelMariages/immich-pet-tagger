@@ -220,10 +220,12 @@ async def delete_face(client: httpx.AsyncClient, face_id: str, asset_id: str, un
 # Sync (poller)
 # ---------------------------------------------------------------------------
 
-def fetch_assets_created_after(created_after_iso: str) -> list[tuple[str, str]]:
-    """Return [(asset_id, createdAt_iso), ...] for the background poller.
-    Uses createdAt (upload time) so photos synced late never fall behind the cutoff."""
-    return _fetch_assets({"createdAfter": created_after_iso}, ts_field="createdAt", label="fetch_assets_created_after")
+def fetch_assets_created_after(created_after_iso: str) -> list[tuple[str, str, str]]:
+    """Return [(asset_id, createdAt_iso, fileCreatedAt_iso), ...] for the background poller.
+    Uses createdAt (upload time) as the cursor so photos synced late never fall behind the
+    cutoff, but also returns fileCreatedAt (EXIF taken date) since that, not the upload time,
+    is what a pet's since/until date range must be checked against."""
+    return _fetch_assets({"createdAfter": created_after_iso}, ts_field="createdAt", label="fetch_assets_created_after", extra_field="fileCreatedAt")
 
 
 def fetch_assets_taken_after(taken_after_iso: str, taken_before_iso: str | None = None) -> list[tuple[str, str]]:
@@ -260,10 +262,10 @@ def fetch_assets_in_range(taken_after_iso: str, taken_before_iso: str | None = N
     return out
 
 
-def _fetch_assets(query: dict, ts_field: str, label: str) -> list[tuple[str, str]]:
+def _fetch_assets(query: dict, ts_field: str, label: str, extra_field: str | None = None) -> list[tuple]:
     url = f"{IMMICH_URL}/api/search/metadata"
     hdrs = {**headers(), "Content-Type": "application/json"}
-    out: list[tuple[str, str]] = []
+    out: list[tuple] = []
     page = 1
     size = 1000
     while True:
@@ -280,7 +282,11 @@ def _fetch_assets(query: dict, ts_field: str, label: str) -> list[tuple[str, str
             if aid and ts:
                 if owner_id and a.get("ownerId") != owner_id:
                     continue
-                out.append((str(aid).strip("\x00"), ts))
+                if extra_field:
+                    extra = a.get(extra_field) or ts
+                    out.append((str(aid).strip("\x00"), ts, extra))
+                else:
+                    out.append((str(aid).strip("\x00"), ts))
         if len(items) < size:
             break
         page += 1
