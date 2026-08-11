@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.7.1
+
+### Fixed
+- The background scanner checked a pet's date range against the photo's Immich upload time instead of the date it was actually taken, so a photo imported/synced after a pet's `since` date could pass the range check even though it was taken years earlier (part of #43).
+
 ## v1.7.0
 
 ### Features
