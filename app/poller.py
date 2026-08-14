@@ -18,6 +18,12 @@ import immich as imm
 log = logging.getLogger("poller")
 
 THRESHOLD = float(os.environ.get("THRESHOLD", 0.8))
+THRESHOLD_FALLBACK = float(os.environ.get("THRESHOLD_FALLBACK", THRESHOLD))
+"""Separate, optional threshold for whole-image fallback classifications (YOLO found no
+animal to crop). Defaults to THRESHOLD itself, so leaving it unset behaves exactly like
+before this existed. The tagging accuracy tool has consistently measured the fallback
+path as a meaningfully noisier signal than a real crop (see .claude/decisions.md), this
+lets that be corrected for in live tagging, not just observed in the diagnostic."""
 
 _count_lock = threading.Lock()
 
@@ -115,7 +121,7 @@ def migrate_ref_bboxes(data_dir: Path) -> None:
 
 def run_poll_cycle(data_dir: str, on_date=None, cancel=None, low_conf_out=None, live_counts: dict | None = None, manual: bool = False, scan_until: str | None = None, scan_since: str | None = None) -> None:
     dd = Path(data_dir)
-    log.info(f"Poll cycle | threshold={THRESHOLD} yolo_conf={det.YOLO_CONF} manual={manual}")
+    log.info(f"Poll cycle | threshold={THRESHOLD} threshold_fallback={THRESHOLD_FALLBACK} yolo_conf={det.YOLO_CONF} manual={manual}")
     now = datetime.now(timezone.utc).isoformat()
     data.write_poll_status(dd, {"status": "running", "started_at": now})
 
@@ -185,6 +191,7 @@ def _run_poll_cycle(dd: Path, counts: dict, on_date=None, cancel=None, low_conf_
 
     latest_ts = max((cursor_ts for _, cursor_ts, _ in assets), default=last_ts)
     threshold = THRESHOLD
+    threshold_fallback = THRESHOLD_FALLBACK
     yolo_conf = det.YOLO_CONF
 
     def process_asset(aid: str, time_str: str) -> None:
@@ -222,7 +229,8 @@ def _run_poll_cycle(dd: Path, counts: dict, on_date=None, cancel=None, low_conf_
 
             pet_name, prob = clf_mod.classify(vec, names, clf, scaler)
             cfg = config.get(pet_name, {})
-            outcome = classify_outcome(pet_name, prob, time_str, cfg, threshold=threshold)
+            th = threshold if bbox_norm is not None else threshold_fallback
+            outcome = classify_outcome(pet_name, prob, time_str, cfg, threshold=th)
 
             if outcome == "unknown":
                 with _count_lock:
