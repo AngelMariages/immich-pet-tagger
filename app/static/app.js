@@ -662,7 +662,7 @@ async function viewScanLowConf() {
   label.textContent = 'Loading…';
   document.getElementById('scanFilterBtns').style.display = 'none';
   const scanPetBtns = document.getElementById('scanPetBtns');
-  scanPetBtns.innerHTML = pets.map(p => `<button class="btn btn-primary" title="Clear, close-up shot, your pet is the only subject.">${p.name}</button>`).join('');
+  scanPetBtns.innerHTML = pets.map(p => `<button class="btn btn-primary" title="Clear, close-up shot, your pet is the only subject.">${escapeHtml(p.name)}</button>`).join('');
   [...scanPetBtns.children].forEach((btn, i) => { btn.onclick = () => scanAssignSelected(pets[i].name); });
   updateSelUI();
   try {
