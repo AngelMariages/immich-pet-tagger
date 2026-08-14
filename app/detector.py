@@ -18,6 +18,7 @@ YOLO_WORKERS = int(os.environ.get("GPU_WORKERS", 2))
 YOLO_INPUT_SIZE = int(os.environ.get("YOLO_INPUT_SIZE", 640))
 YOLO_MODEL_NAME = os.environ.get("YOLO_MODEL_NAME", "yolov8n.pt")
 YOLO_CONF = float(os.environ.get("YOLO_CONF", 0.25))
+IOU_THRESHOLD = float(os.environ.get("IOU_THRESHOLD", 0.7))
 
 # Passed to the model call itself: a permissive floor so boxes are never discarded before
 # reaching Python. The real cutoff (YOLO_CONF, optionally overridden per request, e.g. by
@@ -111,7 +112,7 @@ def _yolo_batch_loop(worker_id: int) -> None:
             # Tensors are already preprocessed by caller threads: B×C×H×W, float32, [0,1], RGB.
             # Ultralytics skips PIL/numpy conversion when given a tensor directly.
             stacked = torch.stack([req.tensor for req in batch])
-            results_list = model(stacked, verbose=False, imgsz=YOLO_INPUT_SIZE, conf=_MODEL_CONF_FLOOR)
+            results_list = model(stacked, verbose=False, imgsz=YOLO_INPUT_SIZE, conf=_MODEL_CONF_FLOOR, iou=IOU_THRESHOLD)
             for req, result in zip(batch, results_list):
                 boxes = []
                 for box in result.boxes:

@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.7.2
+
+### Features
+- `IOU_THRESHOLD` env var exposes YOLO's NMS overlap-suppression threshold (default `0.7`, matching prior behavior). Lowering it helps when two pets photographed close together or cuddling get merged into a single detection instead of two separate crops (addresses #44).
+
+### Fixed
+- Pet names containing quotes or apostrophes (e.g. `D'argo`) broke the sidebar's edit/delete buttons, since the name was interpolated directly into an inline `onclick` string. Names are now passed through a `data-name` attribute instead (fix contributed by @thespragg in #45). The low-confidence scan panel's pet-assignment buttons had the same unescaped-name issue and are fixed too.
+
 ## v1.7.1
 
 ### Fixed
