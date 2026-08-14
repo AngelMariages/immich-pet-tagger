@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.7.3
+
+### Features
+- `THRESHOLD_FALLBACK` env var sets a separate confidence threshold for whole-image fallback classifications (when YOLO finds no animal to crop), instead of sharing `THRESHOLD` with real crops. Defaults to `THRESHOLD`'s value, so it's a no-op unless set explicitly. The tagging accuracy tool has consistently measured the fallback path as a meaningfully noisier signal than a real crop; this lets that be corrected for in live tagging (e.g. setting it higher than `THRESHOLD`) instead of only being visible in the diagnostic.
+
 ## v1.7.2
 
 ### Features

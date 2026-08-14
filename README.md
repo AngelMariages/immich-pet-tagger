@@ -206,7 +206,8 @@ After that, the background poller runs every hour and tags new photos automatica
 | `YOLO_INPUT_SIZE` | `640` | YOLO detection resolution in pixels. Higher values improve detection of small animals at the cost of more memory and compute. Must be a multiple of 32. |
 | `YOLO_BATCH_SIZE` | `32` | Max images per YOLO inference batch. Reduce if you hit GPU out-of-memory errors. |
 | `EMBED_CACHE_SIZE` | `5000` | Max number of embeddings kept in the in-memory LRU cache. Older entries are evicted when the limit is reached. |
-| `THRESHOLD` | `0.8` | Min confidence (0–1) to tag a photo |
+| `THRESHOLD` | `0.8` | Min confidence (0–1) to tag a photo, when YOLO found a real crop. |
+| `THRESHOLD_FALLBACK` | same as `THRESHOLD` | Min confidence (0–1) to tag a photo when YOLO found nothing and the whole image was embedded instead of a crop. Defaults to `THRESHOLD`'s value, so it does nothing unless set explicitly. Worth raising above `THRESHOLD`: the tagging accuracy tool has consistently measured this whole-image fallback as a noisier signal than a real crop, a separate, stricter threshold trades a bit of recall on fallback matches for meaningfully fewer false positives. |
 | `YOLO_CONF` | `0.25` (`0.2` in docker-compose.yml) | Min YOLO detection confidence (0–1) to count as a real crop. Lower catches more (small, turned-away, or partially visible pets) but crops get noisier. Below this, tagging falls back to embedding the whole photo instead of a crop. |
 | `IOU_THRESHOLD` | `0.7` | YOLO's NMS IoU threshold (0–1). Overlapping detections whose boxes overlap more than this fraction are merged into one. Lower this if two cuddling/overlapping pets in the same photo are being collapsed into a single detection. |
 | `LONG_REQUEST_TIMEOUT` | `120` | Max seconds for CPU-heavy UI requests (Find missed, Find candidates, Find references). Responses stream keepalive bytes so browsers do not drop idle connections. |
