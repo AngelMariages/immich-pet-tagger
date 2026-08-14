@@ -14,6 +14,10 @@ function toast(msg, type = '') {
 
 function initials(name) { return name.slice(0, 2).toUpperCase(); }
 
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
 async function refreshState() {
   try {
     const cfg = await api('/api/config');
@@ -59,14 +63,14 @@ function renderSidebar() {
     return;
   }
   el.innerHTML = pets.map(p => `
-    <div class="pet-item ${activePet?.name === p.name ? 'active' : ''}" onclick="selectPet('${p.name}')">
-      <div class="pet-avatar">${p.person_id ? `<img src="/api/person-thumb/${p.person_id}" onerror="this.parentElement.textContent='${initials(p.name)}'" alt="">` : initials(p.name)}</div>
+    <div class="pet-item ${activePet?.name === p.name ? 'active' : ''}" data-name="${escapeHtml(p.name)}" onclick="selectPet(this.dataset.name)">
+      <div class="pet-avatar">${p.person_id ? `<img src="/api/person-thumb/${p.person_id}" onerror="this.parentElement.textContent=initials(this.parentElement.parentElement.dataset.name)" alt="">` : initials(p.name)}</div>
       <div class="pet-info">
-        <div class="pet-name">${p.name}</div>
+        <div class="pet-name">${escapeHtml(p.name)}</div>
         <div class="pet-count">${p.ref_count} ref${p.ref_count !== 1 ? 's' : ''}</div>
       </div>
-      <button class="pet-edit" onclick="event.stopPropagation(); openEditPet('${p.name}')" title="Edit">✎</button>
-      <button class="pet-delete" onclick="event.stopPropagation(); openDeletePet('${p.name}')" title="Delete">✕</button>
+      <button class="pet-edit" onclick="event.stopPropagation(); openEditPet(this.closest('.pet-item').dataset.name)" title="Edit">✎</button>
+      <button class="pet-delete" onclick="event.stopPropagation(); openDeletePet(this.closest('.pet-item').dataset.name)" title="Delete">✕</button>
     </div>`).join('');
 }
 
@@ -197,7 +201,7 @@ function renderPhotoItems(a, thr) {
     const cropIdxAttr = cropIdx != null ? `data-crop-idx="${cropIdx}"` : '';
     const bboxAttr = bbox ? `data-bbox='${JSON.stringify(bbox)}'` : '';
     return `<div class="photo-thumb" id="th-${key}" data-asset-id="${a.id}" ${cropIdxAttr} ${bboxAttr}
-      onclick="toggleSelect(event,'${key}')" title="${title}">
+      onclick="toggleSelect(event,'${key}')" title="${escapeHtml(title)}">
       <img src="${src}" loading="lazy" onerror="this.src='data:image/svg+xml,<svg/>'">
       <a class="photo-open" href="${immichUrl}/photos/${a.id}" target="_blank" rel="noopener" onclick="event.stopPropagation()">⤢</a>
       <div class="photo-check">✓</div>
@@ -901,7 +905,7 @@ function renderImportPeople(people) {
   grid.innerHTML = people.map(p => `
     <div class="person-card${petPersonIds.has(p.id) ? ' already-added' : ''}" data-pid="${p.id}" onclick="handlePersonCardClick(this)">
       <img class="person-thumb" src="/api/person-thumb/${p.id}" onerror="this.style.opacity=0.2" loading="lazy" alt="">
-      <span class="person-name-label">${p.name || '—'}</span>
+      <span class="person-name-label">${escapeHtml(p.name || '—')}</span>
     </div>`).join('');
 }
 
