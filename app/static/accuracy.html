@@ -22,6 +22,10 @@
   .badge.yolo { background:#353; color:#9f9; }
   p.note { color:#999; max-width:700px; }
   p.warning { color:#e8a33d; max-width:700px; border-left:3px solid #e8a33d; padding-left:10px; }
+  .overall { font-size:18px; font-weight:600; color:#fff; margin:14px 0; }
+  .overall .sub { font-size:13px; font-weight:400; color:#999; }
+  .table-hint { font-size:11px; color:#888; margin:10px 0 4px; }
+  .legend-note { font-size:11px; color:#888; max-width:700px; }
   form { display:flex; gap:8px 16px; align-items:center; margin:16px 0; flex-wrap:wrap; }
   form .thresholds { display:flex; gap:8px 16px; flex-wrap:wrap; align-items:flex-start; padding:8px 12px; border:1px solid #333; border-radius:6px; }
   form .thresholds legend, form .thresholds .legend { font-size:11px; color:#888; width:100%; }
@@ -54,15 +58,15 @@
 </head>
 <body>
 <h1>Tagging accuracy</h1>
-<p class="note">Dry-run classifies every photo/video in the given date range and compares against the actual Immich tags. Uses the classifier trained on whatever reference and negative photos are currently set up in the main enrollment page, this page has no separate refs of its own, add or remove refs there and re-run here to see the effect. Pick a date range and a YOLO detection confidence, run it once, then explore CLIP thresholds interactively below, no re-scan needed for that part. A summary table breaks down recall by bucket and pet; below that, only mismatches are shown as thumbnails: Missing (you tagged it, the model didn't) and False positives (the model would tag it, you didn't). Correct agreements aren't shown as thumbnails, only counted in the table.</p>
-<p class="warning">Immich's tags in the scanned range are treated as ground truth. Before running this on a range, make sure every photo/video in it has already been manually tagged, double-checked, and corrected — any date range with un-reviewed or wrong tags will produce misleading Missing/False positive/Recall numbers, since this evaluation can only be as accurate as what it's compared against.</p>
+<p class="note">Dry-run scans every photo/video in a date range and checks how well the tagger would have done, without changing any tags. It uses whichever reference and negative photos are already set up on the main enrollment page (this page has no refs of its own); edit refs there and re-run here to see the effect. Pick a date range and detection confidence below, run once, then tune thresholds live with the explorer further down, no re-scan needed for that part. Only mismatches are shown as thumbnails; correct matches are counted in the table but not shown.</p>
+<p class="warning">This evaluation compares against your existing Immich tags in that range, so it's only as accurate as those tags are. Before running it, make sure every photo/video in the range has already been manually tagged and double-checked, otherwise the results below will be misleading.</p>
 <form id="runForm">
   <label>Since <input type="date" id="since" required></label>
   <label>Until <input type="date" id="until"></label>
   <div class="thresholds">
     <label class="field">
-      <span>YOLO confidence floor (0-1) <input type="number" id="benchYoloConf" min="0.01" max="1" step="0.01"></span>
-      <span class="hint">Minimum detection confidence to count as a crop at all, otherwise YOLO fail. Only affects this run, not live detection.</span>
+      <span>YOLO (animal detector) confidence floor (0-1) <input type="number" id="benchYoloConf" min="0.01" max="1" step="0.01"></span>
+      <span class="hint">YOLO is the detector that finds and crops the pet in each photo. Below this confidence it counts as a "Fail" and the whole photo is used instead. Only affects this run, not live tagging.</span>
     </label>
   </div>
   <button type="submit">Run evaluation</button>
@@ -71,9 +75,11 @@
 </form>
 <div id="status"></div>
 <div id="configLine"></div>
+<div id="overallSummary"></div>
 <div id="curveSection"></div>
 <div id="statsTable"></div>
 <div id="download"></div>
+<p class="legend-note">Thumbnail badge: a number like "YOLO 0.68" means the detector found the pet at that confidence; "fallback" means the detector failed and the whole photo was scored instead.</p>
 <div id="sections"></div>
 <script>
 const statusEl = document.getElementById('status');
@@ -82,6 +88,7 @@ const downloadEl = document.getElementById('download');
 const configEl = document.getElementById('configLine');
 const statsEl = document.getElementById('statsTable');
 const curveEl = document.getElementById('curveSection');
+const overallEl = document.getElementById('overallSummary');
 
 const BENCHMARK_BUCKETS = ['yolo', 'fallback', 'video_yolo', 'video_fallback'];
 
@@ -223,7 +230,7 @@ function nearestPoint(points, t) {
 // doesn't lose focus or cursor position on every keystroke.
 function buildCurveCards(curve) {
   curveEl.innerHTML = `<h2>Threshold explorer</h2>
-    <p class="note">This is where you pick your tradeoff between recall (how many of your real tags get caught) and false positives (wrong tags you'd have to clean up), per bucket. A higher threshold means fewer false positives but lower recall (stricter, misses more real tags); a lower threshold means higher recall but more false positives (looser, catches more but also more mistakes). Sweeps every CLIP threshold from 0.30 to 0.99 using the scores this run already collected. Click a chart, or type a value, to set that bucket's threshold, everything below (including the stats table and thumbnail grids) updates to match, no re-run needed.</p>
+    <p class="note">Pick your tradeoff between recall (how many of your real tags get caught) and false positives (wrong tags you'd have to clean up), per bucket. Higher threshold = fewer false positives but lower recall (stricter, misses more real tags); lower threshold = higher recall but more false positives (looser, catches more but also more mistakes). Click a chart, or type a value, to set that bucket's threshold; everything below updates instantly, no re-run needed.</p>
     <div class="curve-wrap">${TIER_META.map(meta => `
       <div class="curve-card" data-tier="${meta.key}">
         <h4>${meta.label}</h4>
@@ -277,15 +284,15 @@ function updateCurveCard(meta, curve) {
 // ---------------------------------------------------------------------------
 
 const STATS_COLUMNS = [
-  {label: 'Type', key: 'type'},
-  {label: 'YOLO', key: 'yolo'},
-  {label: 'Pet', key: 'pet'},
-  {label: 'Ground truth', key: 'gt'},
-  {label: 'Correct', key: 'correct'},
-  {label: 'Missing', key: 'missing'},
-  {label: 'False positive', key: 'extra'},
-  {label: 'FP rate', key: 'extra_rate_pct'},
-  {label: 'Recall', key: 'recall_pct'},
+  {label: 'Type', key: 'type', title: 'Photo or video'},
+  {label: 'YOLO', key: 'yolo', title: 'Detected: the animal detector found the pet. Fail: it didn\'t, so the whole photo was used instead.'},
+  {label: 'Pet', key: 'pet', title: 'Which pet this row is about'},
+  {label: 'Ground truth', key: 'gt', title: 'Photos already tagged with this pet in Immich'},
+  {label: 'Correct', key: 'correct', title: 'The model agrees with your tag (score at or above threshold)'},
+  {label: 'Missing', key: 'missing', title: 'You tagged it, but the model scored it below threshold: a real miss'},
+  {label: 'False positive', key: 'extra', title: 'The model scored it above threshold, but you haven\'t tagged it there'},
+  {label: 'FP rate', key: 'extra_rate_pct', title: 'False positive / Ground truth, for comparing buckets of different sizes'},
+  {label: 'Recall', key: 'recall_pct', title: 'Correct / Ground truth: the percent of your real tags the model would also catch'},
 ];
 let statsSort = {key: 'bucket', dir: 1};
 
@@ -346,14 +353,12 @@ function renderStats(stats) {
 
   const headers = STATS_COLUMNS.map(c => {
     const arrow = statsSort.key === c.key ? (statsSort.dir === 1 ? ' &#9650;' : ' &#9660;') : '';
-    return `<th class="sortable" data-key="${c.key}">${c.label}${arrow}</th>`;
+    return `<th class="sortable" data-key="${c.key}" title="${c.title}">${c.label}${arrow}</th>`;
   }).join('');
 
   statsEl.innerHTML = `
+    <p class="table-hint">Hover a column header for what it means. Click a header to sort. Thresholds come from the explorer above.</p>
     <table class="stats">
-      <caption>
-        <b>Ground truth</b>: how many assets in this bucket you've actually tagged with this pet. <b>Correct</b>: the model agrees (score above threshold). <b>Missing</b>: you tagged it but the model scored it below threshold, a real miss. <b>False positive</b>: the model scored it above threshold but you haven't tagged it there, either a real false tag or one you just haven't gotten to yet. <b>FP rate</b>: False positive / Ground truth, use this (not the raw count) to compare buckets or configs of different sizes. <b>Recall</b>: Correct / Ground truth, the percentage of your real tags the model would also catch. Thresholds come from the threshold explorer above. Click a column header to sort.
-      </caption>
       <thead><tr>${headers}</tr></thead>
       <tbody>${rows}</tbody>
     </table>`;
@@ -424,12 +429,50 @@ function renderSections(missing, extra) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Overall summary: one headline number across every pet combined, at the
+// currently-picked thresholds, so the user doesn't have to average the stats
+// table themselves. Photos only: video tagging accuracy is unreliable for
+// reasons outside this tool's control, so it's excluded from this headline
+// (the stats table, charts, and thumbnail grids below still cover both).
+// ---------------------------------------------------------------------------
+
+const PHOTO_BUCKETS = ['yolo', 'fallback'];
+
+function computeOverall(curve) {
+  let gtTotal = 0, correct = 0, missingCount = 0, extraCount = 0;
+  for (const bucket of PHOTO_BUCKETS) {
+    const th = tierThresholds[bucketTier(bucket)];
+    const byPet = (curve && curve[bucket]) || {};
+    for (const {gt, extra} of Object.values(byPet)) {
+      gtTotal += gt.length;
+      const c = countAtLeast(gt, th);
+      correct += c;
+      missingCount += gt.length - c;
+      extraCount += countAtLeast(extra, th);
+    }
+  }
+  return {
+    gtTotal, missingCount, extraCount,
+    recall: gtTotal ? Math.round(1000 * correct / gtTotal) / 10 : null,
+  };
+}
+
+function renderOverall(curve) {
+  const o = computeOverall(curve);
+  if (!o.gtTotal) { overallEl.innerHTML = ''; return; }
+  overallEl.innerHTML = `<div class="overall">Overall photo recall: ${o.recall}%
+    <div class="sub">${o.missingCount} missing, ${o.extraCount} false positives, across ${o.gtTotal} tagged photos, at the current thresholds</div>
+  </div>`;
+}
+
 // Recomputes and redraws everything that depends on the currently-picked thresholds
-// (both curve cards, the stats table, and the thumbnail grids), without touching the
-// threshold <input> elements themselves.
+// (the overall summary, both curve cards, the stats table, and the thumbnail grids),
+// without touching the threshold <input> elements themselves.
 function renderDerived() {
   if (!lastResult) return;
   const curve = lastResult.curve || {};
+  renderOverall(curve);
   for (const meta of TIER_META) updateCurveCard(meta, curve);
   renderStats(computeStats(curve));
   const {missing, extra} = computeMissingExtra(curve);
