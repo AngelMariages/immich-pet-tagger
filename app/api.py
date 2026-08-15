@@ -839,7 +839,11 @@ async def _run_benchmark(
     yolo_conf_override: float | None = None,
 ):
     state.benchmark_progress = {"current": 0, "total": 0, "running": True}
-    state.benchmark_result = None
+    # Deliberately not clearing state.benchmark_result here: whatever result was already
+    # there (a prior run, or one imported via /analysis/benchmark/result) stays visible
+    # while this run is in progress, and is only replaced below once this run actually
+    # produced something, so stopping a run almost immediately can't wipe out a perfectly
+    # good previous result and leave the page with nothing.
 
     def compute():
         yolo_conf = yolo_conf_override if yolo_conf_override is not None else det.YOLO_CONF
@@ -929,7 +933,14 @@ async def _run_benchmark(
             return {"config": config_block, "curve": curve_out}
 
     try:
-        state.benchmark_result = await asyncio.to_thread(compute)
+        new_result = await asyncio.to_thread(compute)
+        has_data = any(new_result["curve"].get(b) for b in BENCHMARK_BUCKETS)
+        # Only replace the previous result if this run collected something, or actually
+        # ran to completion uncancelled (an empty range is a legitimate result). A run
+        # stopped before it collected any data leaves the previous result in place instead
+        # of overwriting it with an empty one, see the comment above.
+        if has_data or not new_result["config"].get("partial"):
+            state.benchmark_result = new_result
     finally:
         state.benchmark_progress["running"] = False
 

@@ -183,15 +183,20 @@ async def apply_review_tag(client: httpx.AsyncClient, asset_id: str) -> None:
 
 
 async def remove_review_tag(client: httpx.AsyncClient, asset_id: str) -> None:
-    """Strip REVIEW_TAG from asset_id, undoing apply_review_tag. No-op when unset or never
-    resolved (nothing to remove either way). Never raises: caller has already removed the
-    face that prompted this and must not fail because of a tagging cleanup issue."""
-    if not REVIEW_TAG or not _review_tag_id:
+    """Strip REVIEW_TAG from asset_id, undoing apply_review_tag. No-op when unset (nothing to
+    remove either way). Resolves the tag id itself (same as apply_review_tag) rather than
+    trusting the cache, since this can be the first review-tag call in the process (e.g. right
+    after a restart, removing a ref before ever adding one). Never raises: caller has already
+    removed the face that prompted this and must not fail because of a tagging cleanup issue."""
+    if not REVIEW_TAG:
+        return
+    tag_id = await resolve_review_tag_id(client)
+    if not tag_id:
         return
     try:
         resp = await client.request(
             "DELETE",
-            f"{IMMICH_URL}/api/tags/{_review_tag_id}/assets",
+            f"{IMMICH_URL}/api/tags/{tag_id}/assets",
             json={"ids": [asset_id]},
             headers={**headers(), "Content-Type": "application/json"},
             timeout=15,

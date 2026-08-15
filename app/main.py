@@ -90,14 +90,21 @@ async def status():
     }
 
 
+# FileResponse sets ETag/Last-Modified but no Cache-Control, so browsers fall back to
+# heuristic caching and a plain reload can silently reuse a stale copy from before the
+# last deploy without ever asking the server. no-cache forces revalidation on every
+# load (still cheap: a 304 if the file hasn't changed) instead of relying on that guess.
+NO_CACHE_HEADERS = {"Cache-Control": "no-cache"}
+
+
 @app.get("/")
 async def root():
-    return FileResponse(str(BASE_DIR / "static" / "index.html"))
+    return FileResponse(str(BASE_DIR / "static" / "index.html"), headers=NO_CACHE_HEADERS)
 
 
 @app.get("/accuracy.html")
 async def accuracy_page():
-    return FileResponse(str(BASE_DIR / "static" / "accuracy.html"))
+    return FileResponse(str(BASE_DIR / "static" / "accuracy.html"), headers=NO_CACHE_HEADERS)
 
 
 if __name__ == "__main__":
