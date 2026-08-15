@@ -52,6 +52,7 @@
   .curve-legend { font-size:10px; color:#888; margin-top:2px; }
   .curve-legend .recall { color:#6cf; }
   .curve-legend .extra { color:#f96; }
+  .curve-hint { font-size:10px; color:#888; margin-top:2px; }
   .curve-readout { font-size:12px; color:#ccc; margin-top:6px; }
   .curve-readout b { color:#fff; }
 </style>
@@ -185,7 +186,7 @@ function _axisRange(vals) {
   const mn = Math.min(...vals), mx = Math.max(...vals);
   const span = Math.max(mx - mn, 0.5);
   const pad = span * 0.1;
-  return [Math.max(0, mn - pad), mx + pad];
+  return [Math.max(0, mn - pad), Math.min(100, mx + pad)];
 }
 
 function chartSvg(tier, points, threshold) {
@@ -237,6 +238,7 @@ function buildCurveCards(curve) {
         <label class="field">CLIP threshold <input type="number" id="th_${meta.key}" min="0.01" max="1" step="0.01" value="${tierThresholds[meta.key]}"></label>
         <div class="chart-holder"></div>
         <div class="curve-legend"><span class="recall">— recall %</span> &nbsp; <span class="extra">- - false positive rate %</span></div>
+        <div class="curve-hint">Click anywhere on the chart to set this threshold.</div>
         <div class="curve-readout"></div>
       </div>`).join('')}</div>`;
 
