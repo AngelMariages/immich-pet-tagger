@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.7.4
+
+### Fixed
+- Removing a pet's face (single ref or the whole pet) could leave the review tag (`TAG_NAME`) on the photo instead of stripping it. The untag step read a cached tag id directly instead of resolving it on demand like the tag-apply step does, so it silently did nothing whenever it was the first review-tag call made by a freshly started container.
+- The tagging accuracy tool's recall/false-positive curve chart could render past the 100% mark due to axis padding, and didn't indicate the chart is clickable to set a threshold.
+
 ## v1.7.3
 
 ### Features
