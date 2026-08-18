@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.7.5
+
+### Fixed
+- "Untag all photos in Immich" (the reset button in a pet's delete menu) deleted the Immich person but never removed the review tag (`TAG_NAME`) from the affected photos, the same gap the v1.7.4 fix closed for the ref-removal and whole-pet-delete paths but missed here (part of #46).
+
 ## v1.7.4
 
 ### Fixed
