@@ -251,9 +251,7 @@ async def reset_pet_immich(name: str):
             async with httpx.AsyncClient(timeout=30) as client:
                 resp = await client.delete(f"{imm.IMMICH_URL}/api/people/{old_person_id}", headers=imm.headers())
                 if resp.status_code in (200, 204):
-                    for r in old_refs:
-                        if not _other_pets_have_asset(config, name, r["asset_id"]):
-                            await imm.remove_review_tag(client, r["asset_id"])
+                    await _untag_pet_refs(client, config, name, old_refs)
         except httpx.ConnectError:
             raise HTTPException(status_code=503, detail="Cannot reach Immich. Is it running?")
         except httpx.TimeoutException:
@@ -328,10 +326,7 @@ async def delete_pet(name: str, local_only: bool = False):
             if resp.status_code not in (200, 204):
                 raise HTTPException(status_code=resp.status_code, detail=f"Immich error: {resp.text}")
             log.info(f"Deleted Immich person {person_id} for pet '{name}', face cleanup running in background")
-
-            for r in data.load_pet_refs(person_id, DATA_DIR):
-                if not _other_pets_have_asset(config, name, r["asset_id"]):
-                    await imm.remove_review_tag(client, r["asset_id"])
+            await _untag_pet_refs(client, config, name, data.load_pet_refs(person_id, DATA_DIR))
 
     del config[name]
     data.save_config(config, DATA_DIR)
@@ -501,6 +496,15 @@ def _other_pets_have_asset(config: dict, exclude_name: str, asset_id: str) -> bo
         if any(r["asset_id"] == asset_id for r in data.load_pet_refs(folder_key, DATA_DIR)):
             return True
     return False
+
+
+async def _untag_pet_refs(client: httpx.AsyncClient, config: dict, name: str, refs: list[dict]) -> None:
+    """Strip the review tag from every ref's asset after that pet's Immich person is gone,
+    skipping any asset another pet still has a face on. Shared by delete_pet and
+    reset_pet_immich so the untag step can't drift out of sync between the two."""
+    for r in refs:
+        if not _other_pets_have_asset(config, name, r["asset_id"]):
+            await imm.remove_review_tag(client, r["asset_id"])
 
 
 @router.delete("/pets/{name}/assets/{asset_id}")
