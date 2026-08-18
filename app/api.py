@@ -243,12 +243,17 @@ async def reset_pet_immich(name: str):
         raise HTTPException(status_code=404, detail=f"Pet '{name}' not found")
 
     old_person_id = config[name].get("person_id")
+    old_refs = data.load_pet_refs(old_person_id, DATA_DIR) if old_person_id else []
 
     # Delete old Immich person. 404 means it was already removed manually, which is fine.
     if old_person_id:
         try:
             async with httpx.AsyncClient(timeout=30) as client:
                 resp = await client.delete(f"{imm.IMMICH_URL}/api/people/{old_person_id}", headers=imm.headers())
+                if resp.status_code in (200, 204):
+                    for r in old_refs:
+                        if not _other_pets_have_asset(config, name, r["asset_id"]):
+                            await imm.remove_review_tag(client, r["asset_id"])
         except httpx.ConnectError:
             raise HTTPException(status_code=503, detail="Cannot reach Immich. Is it running?")
         except httpx.TimeoutException:
@@ -287,10 +292,8 @@ async def reset_pet_immich(name: str):
         data.save_config(config, DATA_DIR)
         raise HTTPException(status_code=502, detail="Immich returned no person ID. Pet has been unlinked. Re-create it from the pet settings.")
 
-    # Load refs before removing old folder, then clean up.
-    old_refs = []
+    # Clean up the old pet folder now that refs were already loaded above.
     if old_person_id:
-        old_refs = data.load_pet_refs(old_person_id, DATA_DIR)
         old_dir = PETS_DIR / old_person_id
         if old_dir.exists():
             try:
