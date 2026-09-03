@@ -80,6 +80,11 @@ jobs:
             stable_tag: cpu
             free_disk: false
             platforms: linux/amd64,linux/arm64
+          - variant: rknn
+            build_arg: RKNN=true
+            stable_tag: rknn
+            free_disk: false
+            platforms: linux/arm64
     steps:
       - uses: actions/checkout@v4
 
