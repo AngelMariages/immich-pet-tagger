@@ -1,11 +1,11 @@
 services:
   immich-pet-tagger:
-    image: ghcr.io/tedornitier/immich-pet-tagger:cpu  # GPU: use :latest (NVIDIA) or :rocm (AMD)
+    image: ghcr.io/tedornitier/immich-pet-tagger:cpu  # GPU: use :latest (NVIDIA), :rocm (AMD) or :rknn (Rockchip NPU)
     # build: section below is only needed if you want to build from source instead of pulling the image
     build:
       context: .
       args:
-        CUDA: "false"  # set to "true" for NVIDIA GPU, or ROCM: "true" for AMD
+        CUDA: "false"  # set to "true" for NVIDIA GPU, ROCM: "true" for AMD, or RKNN: "true" for Rockchip NPU
     container_name: immich-pet-tagger
     restart: unless-stopped
     ports:
@@ -16,11 +16,21 @@ services:
       - IMMICH_EXTERNAL_URL=http://localhost:2283 # how your browser reaches Immich
       - TAG_NAME=immich-pet-tagger               # tag applied to every photo the tagger adds a face to, change or remove freely
       - POLL_INTERVAL=3600
-      - GPU_WORKERS=1
+      - GPU_WORKERS=1  # Rockchip NPU: use 3 on an RK3588, one per NPU core
       - YOLO_INPUT_SIZE=640
       - THRESHOLD=0.8
       - THRESHOLD_FALLBACK=0.85
       - YOLO_CONF=0.2
+    # Uncomment the section below to enable the Rockchip NPU (:rknn image).
+    # The NPU is reached through /dev/dri; systempaths=unconfined is what lets the
+    # container read the device tree, which is how the SoC is identified (set
+    # RKNN_SOC instead if you would rather not relax that). See the README for the
+    # one-time step that compiles CLIP for your board.
+    # security_opt:
+    #   - systempaths=unconfined
+    # devices:
+    #   - /dev/dri
+    #
     # Uncomment the section below to enable NVIDIA GPU acceleration.
     # Requires nvidia-container-toolkit: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html
     # For AMD, replace driver: nvidia with driver: amdgpu and use the :rocm image tag above.
