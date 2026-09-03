@@ -35,7 +35,11 @@ MIN_COSINE = 0.99
 def convert(onnx_path: Path, soc: str, quantize: bool = False) -> Path:
     meta_path = onnx_path.with_suffix(".json")
     if not meta_path.exists():
-        sys.exit(f"{meta_path} not found; it is written alongside the ONNX by `rknn_clip.py export`.")
+        sys.exit(
+            f"{meta_path} not found. It is written next to the ONNX by the export step "
+            "(`rknn_clip.py export` for CLIP, `rknn_yolo.py export` for YOLO), so this ONNX "
+            "either came from somewhere else or that step did not finish."
+        )
     meta = json.loads(meta_path.read_text())
 
     size = int(meta["input_size"])
