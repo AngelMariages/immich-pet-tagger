@@ -4,6 +4,7 @@ Usage:
     docker compose exec immich-pet-tagger python /app/rknn_clip.py export
     docker compose exec immich-pet-tagger python /app/rknn_clip.py check photo.jpg [...]
     docker compose exec immich-pet-tagger python /app/rknn_clip.py check /some/folder
+    docker compose exec immich-pet-tagger python /app/rknn_clip.py bench /some/folder
 
 The NPU cannot run a PyTorch model, so the configured CLIP image encoder is
 exported to ONNX once and then built into a .rknn for one specific SoC. The build
@@ -116,18 +117,29 @@ class Encoder:
             )
         log.info(f"CLIP running on the NPU from {path.name}")
 
-    def encode(self, img: Image.Image) -> np.ndarray | None:
-        """One L2-normalized embedding, matching what the PyTorch path returns.
+    def preprocess(self, img: Image.Image) -> np.ndarray:
+        """Kept separate from run() so callers can do it in their own thread, the
+        way the PyTorch path already preprocesses outside the worker. Resizing a
+        photo costs more CPU than the NPU spends on the embedding, so doing it in
+        the worker would serialize the expensive half behind the cheap one."""
+        return preprocess(img, self.size)
+
+    def run(self, arr: np.ndarray) -> np.ndarray | None:
+        """One L2-normalized embedding from an already preprocessed image.
 
         The .rknn graph stops at the image features, exactly like encode_image
-        does; normalizing here keeps that one step in numpy where it is free,
-        rather than asking the converter to map a ReduceL2 onto the NPU."""
-        out = self._rknn.inference(inputs=[preprocess(img, self.size)], data_format="nhwc")
+        does; normalizing here keeps that step in numpy where it is free, rather
+        than asking the converter to map a ReduceL2 onto the NPU."""
+        out = self._rknn.inference(inputs=[arr], data_format="nhwc")
         if not out:
             return None
         vec = np.asarray(out[0], dtype=np.float32).reshape(-1)
         norm = float(np.linalg.norm(vec))
         return vec / norm if norm else None
+
+    def encode(self, img: Image.Image) -> np.ndarray | None:
+        """Both halves, for callers that have nowhere better to preprocess."""
+        return self.run(self.preprocess(img))
 
     def close(self) -> None:
         self._rknn.release()
@@ -285,6 +297,45 @@ def image_paths(args: list[str]) -> list[str]:
     return paths
 
 
+def bench(paths: list[str], runs: int = 3) -> int:
+    """Throughput of the real embedding pipeline, driven the way a scan drives it.
+
+    Runs through embedder rather than calling the Encoder directly, so what gets
+    measured is the arrangement that actually ships: SCAN_WORKERS threads doing
+    preprocessing in parallel, feeding GPU_WORKERS workers. Comparing backends is
+    a matter of running it again with BACKEND=cpu.
+
+    Photos are decoded and scaled down to preview size first, outside the timed
+    section, because a scan embeds Immich thumbnails and YOLO crops rather than
+    full resolution originals; timing a 12 MP decode would drown the difference
+    the backend makes."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    import embedder as emb
+
+    print(f"Loading {len(paths)} photos...")
+    images = []
+    for path in paths:
+        img = Image.open(path).convert("RGB")
+        img.thumbnail((1440, 1440))  # roughly what Immich serves as a preview
+        images.append(img)
+
+    emb.start_workers()
+    emb.wait_for_ready()
+
+    work = images * runs
+    started = time.perf_counter()
+    with ThreadPoolExecutor(max_workers=emb.SCAN_WORKERS) as pool:
+        vecs = list(pool.map(emb.embed_image, work))
+    elapsed = time.perf_counter() - started
+    emb.stop_workers()
+
+    done = sum(v is not None for v in vecs)
+    print(f"\nBackend {npu.describe()}, {emb.GPU_WORKERS} workers, {emb.SCAN_WORKERS} scan threads")
+    print(f"{done}/{len(work)} embeddings in {elapsed:.1f}s: {done / elapsed:.2f} photos/s, {elapsed / done * 1000:.0f} ms each")
+    return 0 if done == len(work) else 1
+
+
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
     args = sys.argv[1:]
@@ -294,11 +345,13 @@ def main() -> int:
         opset = int(args[1]) if len(args) > 1 else 18
         export(model_name, pretrained, opset)
         return 0
-    if args and args[0] == "check" and len(args) > 1:
+    if args and args[0] in ("check", "bench") and len(args) > 1:
         paths = image_paths(args[1:])
         if not paths:
             print(f"No images found in {' '.join(args[1:])}")
             return 1
+        if args[0] == "bench":
+            return bench(paths)
         return check(paths, model_name, pretrained)
 
     print(__doc__.split("\n\n")[1])  # the usage block
