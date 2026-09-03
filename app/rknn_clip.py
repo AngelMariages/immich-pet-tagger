@@ -3,6 +3,7 @@
 Usage:
     docker compose exec immich-pet-tagger python /app/rknn_clip.py export
     docker compose exec immich-pet-tagger python /app/rknn_clip.py check photo.jpg [...]
+    docker compose exec immich-pet-tagger python /app/rknn_clip.py check /some/folder
 
 The NPU cannot run a PyTorch model, so the configured CLIP image encoder is
 exported to ONNX once and then built into a .rknn for one specific SoC. The build
@@ -42,6 +43,8 @@ MODEL_DIR = DATA_DIR / "rknn"
 # floor, not a quality target: an fp16 build of the same weights should land far
 # above it, and anything near it means the conversion did something wrong.
 MIN_COSINE = 0.99
+
+_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 
 
 def stem(model_name: str, pretrained: str) -> str:
@@ -266,6 +269,22 @@ def check(paths: list[str], model_name: str, pretrained: str, runs: int = 5) -> 
     return 0
 
 
+def image_paths(args: list[str]) -> list[str]:
+    """Expand directory arguments into the image files inside them.
+
+    A glob like /photos/*.jpg is expanded by the shell that types it, which for
+    `docker run` is the host's, against a path that only exists in the container.
+    Accepting the directory itself avoids handing anyone that trap."""
+    paths = []
+    for arg in args:
+        path = Path(arg)
+        if path.is_dir():
+            paths.extend(sorted(str(f) for f in path.iterdir() if f.suffix.lower() in _IMAGE_SUFFIXES))
+        else:
+            paths.append(arg)
+    return paths
+
+
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
     args = sys.argv[1:]
@@ -276,7 +295,11 @@ def main() -> int:
         export(model_name, pretrained, opset)
         return 0
     if args and args[0] == "check" and len(args) > 1:
-        return check(args[1:], model_name, pretrained)
+        paths = image_paths(args[1:])
+        if not paths:
+            print(f"No images found in {' '.join(args[1:])}")
+            return 1
+        return check(paths, model_name, pretrained)
 
     print(__doc__.split("\n\n")[1])  # the usage block
     return 1
