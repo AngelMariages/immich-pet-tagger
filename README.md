@@ -256,14 +256,16 @@ CPU-only works fine for most home libraries. Expect roughly 10x slower processin
 
 ### Rockchip NPU
 
-Rockchip boards (RK3588 and friends) pair modest CPU cores with an NPU, and the `:rknn` image uses it for both YOLO detection and CLIP embeddings. Measured on an RK3588 with 32 GB RAM, embedding preview-sized photos through the full pipeline:
+Rockchip boards (RK3588 and friends) pair modest CPU cores with an NPU, and the `:rknn` image uses it for both YOLO detection and CLIP embeddings. Measured on an RK3588 (FriendlyELEC CM3588, 32 GB RAM) over 30 preview-sized photos, running what a scan runs per asset: detect animals, embed every crop, fall back to the whole image when there is nothing to crop.
 
-| | photos/s | model load per scan |
-|---|---|---|
-| NPU, `GPU_WORKERS=3` | 10.4 | 1.1s |
-| CPU, `GPU_WORKERS=2` | 1.7 | 9.0s |
+| | photos/s | crops found | model load per scan |
+|---|---|---|---|
+| NPU, `GPU_WORKERS=3` | 8.1 | 18 | 1.1s |
+| CPU, `GPU_WORKERS=3` | 1.6 | 18 | 9.0s |
 
-That is 6x the throughput, and it leaves the CPU cores free for whatever else the machine does, which on a NAS usually matters as much. Embeddings match the CPU ones to a cosine of 0.99996, so a classifier trained on one backend works unchanged on the other and caches do not need rebuilding.
+That is 5x the throughput on the same photos, and it leaves the CPU cores free for whatever else the machine does, which on a NAS usually matters as much. Embeddings alone (no detection) run about 6x faster.
+
+Both backends find the same 18 crops and compute the same 33 embeddings, which is the part that matters more than the ratio: NPU embeddings match the CPU ones to a cosine of 0.99996, and detection confidences to within 0.0003. A classifier trained on one backend works unchanged on the other, and no cache needs rebuilding when you switch.
 
 Supported SoCs: RK3562, RK3566, RK3568, RK3576, RK3588.
 
