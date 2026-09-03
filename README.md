@@ -301,7 +301,7 @@ To confirm the NPU is actually being used, `docker compose logs` shows `Device: 
 
 ```bash
 docker compose exec immich-pet-tagger python /app/rknn_clip.py check /photos   # NPU vs CPU embeddings
-docker compose exec immich-pet-tagger python /app/rknn_clip.py bench /photos   # throughput
+docker compose exec immich-pet-tagger python /app/rknn_clip.py bench /photos   # detect + embed throughput
 ```
 
 If the NPU is not picked up, `python /app/npu.py` prints what the container can see.
