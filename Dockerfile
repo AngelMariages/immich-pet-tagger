@@ -6,10 +6,12 @@ FROM python:3.12-slim AS builder
 #   NVIDIA (default, Turing+ incl. Blackwell):       set CUDA=true
 #   NVIDIA legacy (Maxwell/Pascal/Volta, no Blackwell): set CUDA=true and CUDA_LEGACY=true
 #   AMD:    set ROCM=true  (requires ROCm drivers on the host)
+#   Rockchip NPU: set RKNN=true (arm64 only, requires the rknpu driver on the host)
 #   None:   leave all false (CPU-only, slow but works)
 ARG CUDA=false
 ARG CUDA_LEGACY=false
 ARG ROCM=false
+ARG RKNN=false
 
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
@@ -48,11 +50,28 @@ RUN pip install --no-cache-dir -r requirements.txt \
     && pip install --no-cache-dir opencv-python-headless \
     && pip uninstall -y triton 2>/dev/null || true
 
+# rknn-toolkit-lite2 is only the RKNPU runtime: it loads and runs already-converted
+# .rknn models. Rockchip's converter package (rknn-toolkit2) is deliberately not
+# installed alongside it, because it pins numpy<=1.26.4 and torch<=2.4.0, which
+# this project's numpy 2 / torch 2.7 cannot satisfy. Conversion therefore happens
+# off-device on x86 and the container only ever loads finished models.
+RUN if [ "$RKNN" = "true" ]; then pip install --no-cache-dir rknn-toolkit-lite2==2.3.2; fi
+
 # Runtime stage: clean base + only the final venv state (no ghost install layers).
 FROM python:3.12-slim
 
 COPY --from=builder /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
+
+# rknn-toolkit-lite2 dlopens librknnrt.so at runtime init and refuses to run
+# against a mismatched version, so it is fetched from the same v2.3.2 tag as the
+# wheel instead of relying on whatever the host or base image happens to ship.
+# Downloaded with python rather than curl/wget: neither is in the slim base image,
+# and ADD cannot be made conditional on the build arg.
+ARG RKNN=false
+RUN if [ "$RKNN" = "true" ]; then \
+      python -c "import urllib.request; urllib.request.urlretrieve('https://raw.githubusercontent.com/airockchip/rknn-toolkit2/v2.3.2/rknpu2/runtime/Linux/librknn_api/aarch64/librknnrt.so', '/usr/lib/librknnrt.so')"; \
+    fi
 
 # Set cache directories to /data to support read-only root FS.
 # HOME is required: open_clip downloads the openai CLIP weights to a hardcoded
