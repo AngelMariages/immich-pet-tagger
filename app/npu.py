@@ -44,8 +44,10 @@ _DEVICE_TREE = Path("/proc/device-tree/compatible")
 # The SoC name is only published in the device tree, and a container usually
 # cannot read it: /proc/device-tree is a symlink into /sys/firmware, which Docker
 # masks by default, so even bind-mounting /sys leaves it empty unless the
-# container runs with --security-opt systempaths=unconfined. RKNN_SOC is the way
-# out. It only selects which prebuilt model to load, never whether the NPU is used.
+# container runs with --security-opt systempaths=unconfined. RKNN_SOC covers the
+# case where it is unreadable, but only for choosing which prebuilt model to load.
+# It is not an alternative to unmasking: the RKNPU runtime reads the device tree
+# itself when it starts, and refuses to run without it.
 RKNN_SOC = os.environ.get("RKNN_SOC", "").strip().lower()
 
 
@@ -113,7 +115,8 @@ if __name__ == "__main__":
     except OSError as e:
         print(f"Device tree: unavailable ({e})")
         print("             /sys/firmware is masked unless the container runs with")
-        print("             --security-opt systempaths=unconfined; set RKNN_SOC instead.")
+        print("             --security-opt systempaths=unconfined, which the RKNPU")
+        print("             runtime needs too. RKNN_SOC only names the model to load.")
     print(f"SoC:         {soc() or 'not a supported Rockchip SoC'}")
     print(f"Runtime:     {'rknn-toolkit-lite2 installed' if _has_runtime() else 'not installed'}")
     print(f"Backend:     {describe()}")
