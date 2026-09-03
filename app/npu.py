@@ -9,10 +9,11 @@ and run through the RKNPU runtime. That makes the NPU a third inference backend
 next to CPU and CUDA rather than just another torch device, so the choice is
 resolved once here instead of at every `torch.cuda.is_available()` call site.
 
-Detection is passive. The SoC is read from the device tree, and the NPU only
-counts as usable if the RKNPU runtime wheel is installed, which is only true in
-the -rknn image variant. A plain arm64 CPU install on the same board therefore
-keeps running exactly as before.
+Detection is passive. The RKNPU runtime wheel is the opt-in signal, and it is
+only installed in the -rknn image variant, so a plain arm64 CPU install on the
+very same board keeps running exactly as before. Whether the NPU is actually
+reachable is left to the runtime to report when a model is loaded, the same way
+a failed YOLO or CLIP load is surfaced today.
 """
 
 import importlib.util
@@ -36,14 +37,23 @@ _SOC_ALIASES = {"rk3588s": "rk3588"}
 
 _DEVICE_TREE = Path("/proc/device-tree/compatible")
 
+# The SoC name is only published in the device tree, and a container usually
+# cannot read it: /proc/device-tree is a symlink into /sys/firmware, which Docker
+# masks by default, so even bind-mounting /sys leaves it empty unless the
+# container runs with --security-opt systempaths=unconfined. RKNN_SOC is the way
+# out. It only selects which prebuilt model to load, never whether the NPU is used.
+RKNN_SOC = os.environ.get("RKNN_SOC", "").strip().lower()
+
 
 def soc() -> str | None:
-    """Name of this host's Rockchip SoC, or None if it isn't a supported one.
+    """Name of this host's Rockchip SoC, or None if it can't be determined.
 
     The device tree's `compatible` property is a NUL-separated list of
     "vendor,model" strings, most specific first, e.g.
     "radxa,rock-5b\\0rockchip,rk3588\\0". Every entry is checked rather than just
     the last one, since board vendors are free to order and extend that list."""
+    if RKNN_SOC:
+        return _SOC_ALIASES.get(RKNN_SOC, RKNN_SOC)
     try:
         raw = _DEVICE_TREE.read_text()
     except OSError:
@@ -68,7 +78,10 @@ def backend() -> str:
         return BACKEND
     if torch.cuda.is_available():
         return "cuda"
-    if soc() is not None and _has_runtime():
+    # The wheel, not the SoC, is what decides. Pulling the -rknn image is already
+    # a deliberate choice, and the SoC often isn't readable from inside a
+    # container anyway (see RKNN_SOC), so gating on it would strand real NPUs.
+    if _has_runtime():
         return "rknn"
     return "cpu"
 
@@ -81,10 +94,10 @@ def describe() -> str:
     "Device: cpu" on a board that clearly has an NPU."""
     chosen = backend()
     name = soc()
+    if chosen == "rknn":
+        return f"rknn ({name or 'SoC unknown'})"
     if name is None:
         return chosen
-    if chosen == "rknn":
-        return f"rknn ({name})"
     if not _has_runtime():
         return f"{chosen} ({name} NPU found, but this image has no RKNPU runtime: use the -rknn variant)"
     return f"{chosen} ({name} NPU available, not selected by BACKEND={BACKEND})"
@@ -92,10 +105,11 @@ def describe() -> str:
 
 if __name__ == "__main__":
     try:
-        raw = repr(_DEVICE_TREE.read_text())
+        print(f"Device tree: {_DEVICE_TREE.read_text()!r}")
     except OSError as e:
-        raw = f"unavailable ({e})"
-    print(f"Device tree: {raw}")
+        print(f"Device tree: unavailable ({e})")
+        print("             /sys/firmware is masked unless the container runs with")
+        print("             --security-opt systempaths=unconfined; set RKNN_SOC instead.")
     print(f"SoC:         {soc() or 'not a supported Rockchip SoC'}")
     print(f"Runtime:     {'rknn-toolkit-lite2 installed' if _has_runtime() else 'not installed'}")
     print(f"Backend:     {describe()}")

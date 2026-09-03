@@ -13,8 +13,9 @@ def _device_tree(tmp_path, *entries: str):
 
 @pytest.fixture(autouse=True)
 def default_host(monkeypatch, tmp_path):
-    """No NPU, no CUDA, no runtime wheel, no BACKEND override."""
+    """No NPU, no CUDA, no runtime wheel, no env overrides."""
     monkeypatch.setattr(npu, "BACKEND", "auto")
+    monkeypatch.setattr(npu, "RKNN_SOC", "")
     monkeypatch.setattr(npu, "_DEVICE_TREE", tmp_path / "missing")
     monkeypatch.setattr(npu, "_has_runtime", lambda: False)
     monkeypatch.setattr(npu.torch.cuda, "is_available", lambda: False)
@@ -41,7 +42,18 @@ def test_soc_ignores_unsupported_socs(monkeypatch, tmp_path):
 
 
 def test_soc_without_a_device_tree():
+    """The usual case in a container: /sys/firmware is masked by Docker."""
     assert npu.soc() is None
+
+
+def test_soc_env_override_when_the_device_tree_is_masked(monkeypatch, tmp_path):
+    monkeypatch.setattr(npu, "RKNN_SOC", "rk3588")
+    assert npu.soc() == "rk3588"
+
+
+def test_soc_env_override_is_aliased_too(monkeypatch):
+    monkeypatch.setattr(npu, "RKNN_SOC", "rk3588s")
+    assert npu.soc() == "rk3588"
 
 
 def test_backend_defaults_to_cpu():
@@ -53,9 +65,16 @@ def test_backend_prefers_cuda_when_available(monkeypatch):
     assert npu.backend() == "cuda"
 
 
-def test_backend_picks_rknn_on_a_rockchip_host_with_the_runtime(monkeypatch, tmp_path):
+def test_backend_picks_rknn_when_the_runtime_wheel_is_present(monkeypatch, tmp_path):
     monkeypatch.setattr(npu, "_DEVICE_TREE", _device_tree(tmp_path, "rockchip,rk3588"))
     monkeypatch.setattr(npu, "_has_runtime", lambda: True)
+    assert npu.backend() == "rknn"
+
+
+def test_backend_picks_rknn_even_with_an_unreadable_device_tree(monkeypatch):
+    """A container almost never sees the device tree, so the NPU cannot depend on it."""
+    monkeypatch.setattr(npu, "_has_runtime", lambda: True)
+    assert npu.soc() is None
     assert npu.backend() == "rknn"
 
 
@@ -81,6 +100,11 @@ def test_describe_names_the_soc_when_the_npu_is_in_use(monkeypatch, tmp_path):
     monkeypatch.setattr(npu, "_DEVICE_TREE", _device_tree(tmp_path, "rockchip,rk3588"))
     monkeypatch.setattr(npu, "_has_runtime", lambda: True)
     assert npu.describe() == "rknn (rk3588)"
+
+
+def test_describe_admits_when_the_soc_is_unknown(monkeypatch):
+    monkeypatch.setattr(npu, "_has_runtime", lambda: True)
+    assert npu.describe() == "rknn (SoC unknown)"
 
 
 def test_describe_explains_a_missing_runtime(monkeypatch, tmp_path):
