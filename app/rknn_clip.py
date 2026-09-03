@@ -296,19 +296,23 @@ def image_paths(args: list[str]) -> list[str]:
 
 
 def bench(paths: list[str], runs: int = 3) -> int:
-    """Throughput of the real embedding pipeline, driven the way a scan drives it.
+    """Throughput of a whole scan cycle's worth of inference, per photo.
 
-    Runs through embedder rather than calling the Encoder directly, so what gets
-    measured is the arrangement that actually ships: SCAN_WORKERS threads doing
-    preprocessing in parallel, feeding GPU_WORKERS workers. Comparing backends is
-    a matter of running it again with BACKEND=cpu.
+    Does what the poller does to every asset: detect animals, then embed each
+    crop, falling back to the whole image when nothing is detected. Both models
+    are involved, which is the only way to see the effect of moving either one,
+    and it runs through detector and embedder rather than calling either model
+    directly, so the arrangement being measured is the one that ships:
+    SCAN_WORKERS threads preprocessing in parallel, feeding GPU_WORKERS workers.
+    Comparing backends is a matter of running it again with BACKEND=cpu.
 
-    Photos are decoded and scaled down to preview size first, outside the timed
-    section, because a scan embeds Immich thumbnails and YOLO crops rather than
-    full resolution originals; timing a 12 MP decode would drown the difference
-    the backend makes."""
+    Photos are decoded and scaled to preview size first, outside the timed
+    section, because a scan works from Immich thumbnails rather than full
+    resolution originals; timing a 12 MP JPEG decode would drown the difference
+    the backend makes. What is left out is the Immich fetch itself."""
     from concurrent.futures import ThreadPoolExecutor
 
+    import detector as det
     import embedder as emb
 
     print(f"Loading {len(paths)} photos...")
@@ -318,20 +322,32 @@ def bench(paths: list[str], runs: int = 3) -> int:
         img.thumbnail((1440, 1440))  # roughly what Immich serves as a preview
         images.append(img)
 
+    det.start_workers()
     emb.start_workers()
+    det.wait_for_ready()
     emb.wait_for_ready()
+
+    def one(img) -> tuple[int, int]:
+        """(embeddings, crops) for one photo, mirroring embed_asset_crops."""
+        crops = emb.crop_animals(img)
+        if not crops:
+            return int(emb.embed_image(img) is not None), 0
+        return sum(emb.embed_image(crop) is not None for _, crop in crops), len(crops)
 
     work = images * runs
     started = time.perf_counter()
     with ThreadPoolExecutor(max_workers=emb.SCAN_WORKERS) as pool:
-        vecs = list(pool.map(emb.embed_image, work))
+        results = list(pool.map(one, work))
     elapsed = time.perf_counter() - started
     emb.stop_workers()
+    det.stop_workers()
 
-    done = sum(v is not None for v in vecs)
+    embeddings = sum(n for n, _ in results)
+    crops = sum(c for _, c in results)
     print(f"\nBackend {npu.describe()}, {emb.GPU_WORKERS} workers, {emb.SCAN_WORKERS} scan threads")
-    print(f"{done}/{len(work)} embeddings in {elapsed:.1f}s: {done / elapsed:.2f} photos/s, {elapsed / done * 1000:.0f} ms each")
-    return 0 if done == len(work) else 1
+    print(f"{len(work)} photos in {elapsed:.1f}s: {len(work) / elapsed:.2f} photos/s, {elapsed / len(work) * 1000:.0f} ms each")
+    print(f"{crops} animal crops detected, {embeddings} embeddings computed")
+    return 0 if embeddings else 1
 
 
 def main() -> int:
