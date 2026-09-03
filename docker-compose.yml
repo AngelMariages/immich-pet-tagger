@@ -22,10 +22,12 @@ services:
       - THRESHOLD_FALLBACK=0.85
       - YOLO_CONF=0.2
     # Uncomment the section below to enable the Rockchip NPU (:rknn image).
-    # The NPU is reached through /dev/dri; systempaths=unconfined is what lets the
-    # container read the device tree, which is how the SoC is identified (set
-    # RKNN_SOC instead if you would rather not relax that). See the README for the
-    # one-time step that compiles CLIP for your board.
+    # Both lines are required. The RKNPU runtime refuses to start unless it can
+    # read /proc/device-tree/compatible, which is a symlink into /sys/firmware,
+    # and Docker masks /sys/firmware by default. RKNN_SOC does not substitute for
+    # systempaths: that only names the model file to load, while the runtime does
+    # its own device-tree check. See the README for the one-time step that
+    # compiles the models for your board.
     # security_opt:
     #   - systempaths=unconfined
     # devices:
