@@ -8,6 +8,7 @@ import queue
 import re
 import sqlite3
 import threading
+import time
 from collections import OrderedDict
 from pathlib import Path
 
@@ -18,6 +19,7 @@ import torch
 from PIL import Image
 
 import immich as imm
+import npu
 
 log = logging.getLogger("embedder")
 
@@ -56,10 +58,12 @@ _clip_preprocess_ready = threading.Event()
 
 
 class _EmbedReq:
-    __slots__ = ("tensor", "event", "result")
+    # payload is whatever this backend's preprocessing produced in the caller's
+    # thread: a torch tensor for CPU/CUDA, a uint8 NHWC array for the NPU.
+    __slots__ = ("payload", "event", "result")
 
-    def __init__(self, tensor: torch.Tensor):
-        self.tensor = tensor
+    def __init__(self, payload):
+        self.payload = payload
         self.event = threading.Event()
         self.result: np.ndarray | None = None
 
@@ -132,7 +136,7 @@ def _clip_batch_loop(worker_id: int) -> None:
             _clip_batch_count += 1
 
         try:
-            stacked = torch.stack([req.tensor for req in batch])
+            stacked = torch.stack([req.payload for req in batch])
             if stream is not None:
                 with torch.cuda.stream(stream):
                     tensors = stacked.to(device, non_blocking=True)
@@ -155,11 +159,53 @@ def _clip_batch_loop(worker_id: int) -> None:
             req.event.set()
 
 
+def _rknn_batch_loop(worker_id: int) -> None:
+    """The NPU equivalent of _clip_batch_loop.
+
+    No batching: an .rknn model has its batch size fixed when it is built, and an
+    NPU gains nothing from batching anyway, so requests are served one at a time.
+    Each worker holds its own Encoder because RKNNLite is not safe to call from
+    several threads at once; on an RK3588 the driver then spreads those workers
+    over its three NPU cores by itself."""
+    global _clip_batch_total, _clip_batch_count, _clip_preprocess_fn, _clip_load_error
+    import rknn_clip
+
+    log.info(f"CLIP worker {worker_id} loading on the NPU...")
+    try:
+        encoder = rknn_clip.Encoder(CLIP_MODEL_NAME, CLIP_PRETRAINED)
+    except Exception as e:
+        _clip_load_error = str(e)
+        log.error(f"CLIP worker {worker_id} failed to load: {e}")
+        return
+    if not _clip_preprocess_ready.is_set():
+        _clip_preprocess_fn = encoder.preprocess
+        _clip_preprocess_ready.set()
+    log.info(f"CLIP worker {worker_id} ready")
+
+    try:
+        while True:
+            req = _embed_queue.get()
+            if req is _CLIP_STOP:
+                break
+            with _stats_lock:
+                _clip_batch_total += 1
+                _clip_batch_count += 1
+            try:
+                req.result = encoder.run(req.payload)
+            except Exception as e:
+                log.warning(f"CLIP worker {worker_id} inference error: {e}")
+                req.result = None
+            req.event.set()
+    finally:
+        encoder.close()
+
+
 def _ensure_clip_workers() -> None:
     with _clip_worker_lock:
+        loop = _rknn_batch_loop if npu.backend() == "rknn" else _clip_batch_loop
         alive = [t for t in _clip_worker_threads if t.is_alive()]
         for i in range(len(alive), GPU_WORKERS):
-            t = threading.Thread(target=_clip_batch_loop, args=(i,), daemon=True, name=f"clip-batch-{i}")
+            t = threading.Thread(target=loop, args=(i,), daemon=True, name=f"clip-batch-{i}")
             t.start()
             _clip_worker_threads.append(t)
 
@@ -184,8 +230,17 @@ def stop_workers() -> None:
 
 
 def wait_for_ready(timeout: float = 300) -> None:
-    if not _clip_preprocess_ready.wait(timeout=timeout):
-        raise RuntimeError(_clip_load_error or "CLIP worker did not become ready")
+    """Poll rather than wait on the event alone: a worker that fails to load never
+    sets it, so waiting would burn the whole timeout before reporting an error the
+    worker already knew about. Matches how detector waits for YOLO. The generous
+    default is there for a first start that has to download the model."""
+    deadline = time.time() + timeout
+    while not _clip_preprocess_ready.is_set():
+        if _clip_load_error:
+            raise RuntimeError(f"CLIP not available: {_clip_load_error}")
+        if time.time() > deadline:
+            raise RuntimeError(_clip_load_error or "CLIP worker did not become ready")
+        time.sleep(0.1)
     if _clip_load_error:
         raise RuntimeError(f"CLIP not available: {_clip_load_error}")
 
@@ -212,8 +267,8 @@ def embed_image(img: Image.Image) -> np.ndarray | None:
     _ensure_clip_workers()
     if not _clip_preprocess_ready.wait(timeout=300):  # 300 s covers a slow first-start download
         raise RuntimeError("CLIP worker did not respond within 300 s. Model may still be downloading.")
-    tensor = _clip_preprocess_fn(img)  # CPU preprocessing in caller's thread
-    req = _EmbedReq(tensor)
+    payload = _clip_preprocess_fn(img)  # CPU preprocessing in caller's thread
+    req = _EmbedReq(payload)
     _embed_queue.put(req)
     if not req.event.wait(timeout=120):
         raise RuntimeError("CLIP worker did not respond within 120 s.")
