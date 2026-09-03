@@ -48,7 +48,10 @@ def convert(onnx_path: Path, soc: str, quantize: bool = False) -> Path:
     rknn = RKNN(verbose=False)
     rknn.config(target_platform=soc, mean_values=mean, std_values=std)
 
-    if rknn.load_onnx(model=str(onnx_path), inputs=["pixel_values"], input_size_list=[[1, 3, size, size]]) != 0:
+    # The input name defaults to CLIP's, so sidecars written before YOLO support
+    # (which names its input "images") keep converting.
+    inputs = [meta.get("input_name", "pixel_values")]
+    if rknn.load_onnx(model=str(onnx_path), inputs=inputs, input_size_list=[[1, 3, size, size]]) != 0:
         sys.exit("Loading the ONNX model failed.")
     if rknn.build(do_quantization=quantize) != 0:
         sys.exit("Building the RKNN model failed.")
@@ -89,7 +92,8 @@ def verify(rknn: RKNN, onnx_path: Path, meta: dict) -> float | None:
     mean = np.array(meta["mean"], dtype=np.float32).reshape(1, 3, 1, 1) * 255
     std = np.array(meta["std"], dtype=np.float32).reshape(1, 3, 1, 1) * 255
     x = (arr.astype(np.float32).transpose(0, 3, 1, 2) - mean) / std
-    source = ort.InferenceSession(str(onnx_path), providers=["CPUExecutionProvider"]).run(None, {"pixel_values": x})[0]
+    session = ort.InferenceSession(str(onnx_path), providers=["CPUExecutionProvider"])
+    source = session.run(None, {session.get_inputs()[0].name: x})[0]
 
     a = np.asarray(built, dtype=np.float32).reshape(-1)
     b = np.asarray(source, dtype=np.float32).reshape(-1)

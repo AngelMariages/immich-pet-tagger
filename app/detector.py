@@ -12,6 +12,7 @@ import torch
 from PIL import Image
 
 from device import inference_workers, pick_device, submit_lock
+import npu
 
 log = logging.getLogger("detector")
 
@@ -44,6 +45,7 @@ ANIMAL_CLASS_IDS = {
 
 class _YoloReq:
     __slots__ = ("tensor", "conf", "event", "result")
+
     def __init__(self, tensor: torch.Tensor, conf: float):
         self.tensor = tensor
         self.conf = conf
@@ -79,14 +81,32 @@ def get_yolo_error() -> str | None:
 
 
 def _yolo_batch_loop(worker_id: int) -> None:
-    global yolo_batch_total, yolo_batch_count, _yolo_load_error, runtime_errors, last_runtime_error
+    global \
+        yolo_batch_total, \
+        yolo_batch_count, \
+        _yolo_load_error, \
+        runtime_errors, \
+        last_runtime_error
     from ultralytics import YOLO
-    device = pick_device()
+
+    on_npu = npu.backend() == "rknn"
+    device = "rknn" if on_npu else pick_device()
     log.info(f"YOLO worker {worker_id} loading on {device}...")
     try:
-        model = YOLO(YOLO_MODEL_NAME)
-        with submit_lock(device):
+        if on_npu:
+            # Ultralytics loads .rknn models through its own backend, so everything
+            # downstream (box decoding, NMS, the Results objects read below) is the
+            # same code the CPU and CUDA paths run.
+            import rknn_yolo
+
+            model = YOLO(
+                rknn_yolo.model_path(YOLO_MODEL_NAME, YOLO_INPUT_SIZE), task="detect"
+            )
             model.to(device)
+        else:
+            model = YOLO(YOLO_MODEL_NAME)
+            with submit_lock(device):
+                model.to(device)
     except Exception as e:
         _yolo_load_error = str(e)
         log.error(
@@ -103,9 +123,12 @@ def _yolo_batch_loop(worker_id: int) -> None:
         first = _yolo_queue.get()
         if first is _YOLO_STOP:
             break
+        # An .rknn model has its batch size fixed when it is built, and an NPU has
+        # no batching win to give, so on that backend every request goes alone.
+        batch_limit = 1 if on_npu else YOLO_BATCH_SIZE
         batch = [first]
         try:
-            while len(batch) < YOLO_BATCH_SIZE:
+            while len(batch) < batch_limit:
                 batch.append(_yolo_queue.get_nowait())
         except queue.Empty:
             pass
@@ -119,7 +142,13 @@ def _yolo_batch_loop(worker_id: int) -> None:
             # Ultralytics skips PIL/numpy conversion when given a tensor directly.
             stacked = torch.stack([req.tensor for req in batch])
             with submit_lock(device):
-                results_list = model(stacked, verbose=False, imgsz=YOLO_INPUT_SIZE, conf=_MODEL_CONF_FLOOR, iou=IOU_THRESHOLD)
+                results_list = model(
+                    stacked,
+                    verbose=False,
+                    imgsz=YOLO_INPUT_SIZE,
+                    conf=_MODEL_CONF_FLOOR,
+                    iou=IOU_THRESHOLD,
+                )
                 for req, result in zip(batch, results_list):
                     boxes = []
                     for box in result.boxes:
@@ -132,7 +161,9 @@ def _yolo_batch_loop(worker_id: int) -> None:
                         x1, y1, x2, y2 = box.xyxyn[0].tolist()
                         boxes.append((conf, x1, y1, x2, y2))
                     boxes.sort(reverse=True)
-                    req.result = boxes  # (conf, x1, y1, x2, y2), highest confidence first
+                    req.result = (
+                        boxes  # (conf, x1, y1, x2, y2), highest confidence first
+                    )
                     req.event.set()
         except Exception as e:
             log.warning(f"YOLO worker {worker_id} batch error: {e}")
@@ -148,7 +179,9 @@ def _ensure_yolo_workers() -> None:
     with _yolo_worker_lock:
         alive = [t for t in _yolo_worker_threads if t.is_alive()]
         for i in range(len(alive), YOLO_WORKERS):
-            t = threading.Thread(target=_yolo_batch_loop, args=(i,), daemon=True, name=f"yolo-batch-{i}")
+            t = threading.Thread(
+                target=_yolo_batch_loop, args=(i,), daemon=True, name=f"yolo-batch-{i}"
+            )
             t.start()
             _yolo_worker_threads.append(t)
 
@@ -185,7 +218,9 @@ def _wait_for_yolo_ready(timeout: float = 300) -> None:
         time.sleep(0.1)
 
 
-def detect_animals(img: Image.Image, conf: float | None = None) -> list[tuple[float, float, float, float, float]]:
+def detect_animals(
+    img: Image.Image, conf: float | None = None
+) -> list[tuple[float, float, float, float, float]]:
     """Returns (conf, x1, y1, x2, y2) for detected animals, highest confidence first.
     conf overrides YOLO_CONF for this call only (e.g. a benchmark testing a different
     cutoff); the underlying inference is unaffected either way, only the filter is."""
@@ -198,5 +233,7 @@ def detect_animals(img: Image.Image, conf: float | None = None) -> list[tuple[fl
     req = _YoloReq(tensor, conf if conf is not None else YOLO_CONF)
     _yolo_queue.put(req)
     if not req.event.wait(timeout=120):
-        raise RuntimeError("YOLO worker did not respond within 120 s. Model may still be downloading.")
+        raise RuntimeError(
+            "YOLO worker did not respond within 120 s. Model may still be downloading."
+        )
     return req.result
