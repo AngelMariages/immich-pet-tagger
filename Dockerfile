@@ -55,7 +55,10 @@ RUN pip install --no-cache-dir -r requirements.txt \
 # installed alongside it, because it pins numpy<=1.26.4 and torch<=2.4.0, which
 # this project's numpy 2 / torch 2.7 cannot satisfy. Conversion therefore happens
 # off-device on x86 and the container only ever loads finished models.
-RUN if [ "$RKNN" = "true" ]; then pip install --no-cache-dir rknn-toolkit-lite2==2.3.2; fi
+# onnx is not used at runtime; torch.onnx.export needs it to write the file that
+# the converter then builds from, and that export has to happen here so the graph
+# comes from the same torch and open_clip the app itself runs.
+RUN if [ "$RKNN" = "true" ]; then pip install --no-cache-dir rknn-toolkit-lite2==2.3.2 onnx==1.22.0; fi
 
 # Runtime stage: clean base + only the final venv state (no ghost install layers).
 FROM python:3.12-slim
