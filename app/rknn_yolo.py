@@ -37,18 +37,33 @@ def _sidecar(model_name: str) -> Path:
 
 
 def model_path(model_name: str, input_size: int, soc: str | None = None) -> Path:
-    """The built model for this host, or a RuntimeError explaining how to build it."""
+    """What to hand YOLO(), or a RuntimeError explaining how to build it.
+
+    That is the export directory, not the .rknn inside it: Ultralytics recognizes
+    an RKNN export by the trailing _rknn_model on the directory name and gets no
+    match at all from a bare .rknn path, so passing the file fails format
+    detection before its RKNN backend is ever reached."""
     soc = soc or npu.soc()
     if soc is None:
         raise RuntimeError(
             "Could not determine the Rockchip SoC (the device tree is masked in most "
             "containers). Set RKNN_SOC, e.g. RKNN_SOC=rk3588."
         )
-    path = model_dir(model_name) / f"{Path(model_name).stem}_{soc}.rknn"
-    if not path.exists():
+    directory = model_dir(model_name)
+    build = directory / f"{Path(model_name).stem}_{soc}.rknn"
+    if not build.exists():
         raise RuntimeError(
-            f"{path} not found. Export the ONNX with `python /app/rknn_yolo.py export`, "
+            f"{build} not found. Export the ONNX with `python /app/rknn_yolo.py export`, "
             "then build it for this SoC with the converter in tools/rknn."
+        )
+
+    # Ultralytics loads the first .rknn it finds in the directory, so a build for
+    # another SoC sitting next to this one would be picked arbitrarily.
+    extra = [p.name for p in sorted(directory.glob("*.rknn")) if p != build]
+    if extra:
+        raise RuntimeError(
+            f"{directory} also holds {', '.join(extra)}, and Ultralytics loads whichever "
+            f"model it finds first. Leave only {build.name} in there."
         )
 
     sidecar = _sidecar(model_name)
@@ -56,11 +71,11 @@ def model_path(model_name: str, input_size: int, soc: str | None = None) -> Path
         built_for = json.loads(sidecar.read_text()).get("input_size")
         if built_for and built_for != input_size:
             raise RuntimeError(
-                f"{path.name} was built for {built_for}px but YOLO_INPUT_SIZE is {input_size}. "
+                f"{build.name} was built for {built_for}px but YOLO_INPUT_SIZE is {input_size}. "
                 "An .rknn has its input shape fixed at build time: re-export and rebuild, "
                 f"or set YOLO_INPUT_SIZE={built_for}."
             )
-    return path
+    return directory
 
 
 def export(model_name: str, input_size: int) -> Path:

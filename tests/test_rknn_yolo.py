@@ -23,9 +23,21 @@ def test_model_dir_is_named_the_way_ultralytics_names_its_exports(monkeypatch, t
     assert rknn_yolo.model_dir("yolov8n.pt").name == "yolov8n_rknn_model"
 
 
-def test_model_path_returns_the_build_for_this_soc(model_dir):
+def test_model_path_returns_the_directory_ultralytics_can_identify(model_dir):
+    """Ultralytics detects an RKNN export from the _rknn_model directory name and
+    rejects a bare .rknn path as an unsupported format."""
     _build(model_dir)
-    assert rknn_yolo.model_path("yolov8n.pt", 640, soc="rk3588").name == "yolov8n_rk3588.rknn"
+    assert rknn_yolo.model_path("yolov8n.pt", 640, soc="rk3588") == model_dir
+    assert model_dir.name.endswith("_rknn_model")
+
+
+def test_model_path_refuses_a_directory_with_two_builds_in_it(model_dir):
+    """Ultralytics loads the first .rknn it finds, so an ambiguous directory has
+    to be an error rather than a coin toss over which SoC's model runs."""
+    _build(model_dir)
+    (model_dir / "yolov8n_rk3566.rknn").write_bytes(b"other")
+    with pytest.raises(RuntimeError, match="yolov8n_rk3566.rknn"):
+        rknn_yolo.model_path("yolov8n.pt", 640, soc="rk3588")
 
 
 def test_model_path_reports_a_missing_build_with_the_command_that_makes_it(model_dir):

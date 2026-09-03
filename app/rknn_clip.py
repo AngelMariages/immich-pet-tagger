@@ -347,6 +347,12 @@ def bench(paths: list[str], runs: int = 3) -> int:
     print(f"\nBackend {npu.describe()}, {emb.GPU_WORKERS} workers, {emb.SCAN_WORKERS} scan threads")
     print(f"{len(work)} photos in {elapsed:.1f}s: {len(work) / elapsed:.2f} photos/s, {elapsed / len(work) * 1000:.0f} ms each")
     print(f"{crops} animal crops detected, {embeddings} embeddings computed")
+    if not crops:
+        # Detection failing falls back to embedding whole photos, which still
+        # produces a plausible rate, so say so rather than let it read as a result.
+        print("No detections at all. That is the whole-image fallback, not a working "
+              "detector: check the log for YOLO errors.")
+        return 1
     return 0 if embeddings else 1
 
 
