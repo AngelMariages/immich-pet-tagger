@@ -24,10 +24,11 @@ logging.basicConfig(
 from pathlib import Path
 from embedder import load_embed_cache
 from api import router as api_router
-from device import inference_workers, pick_device
+from device import inference_workers
 import inference
 import detector as det
 import embedder as emb
+import npu
 
 BASE_DIR = Path(__file__).resolve().parent
 import state
@@ -40,15 +41,21 @@ LONG_REQUEST_TIMEOUT = int(os.environ.get("LONG_REQUEST_TIMEOUT", 120))
 
 
 async def polling_loop():
-    device = pick_device()
-    log.info(f"Poller started. Interval: {POLL_INTERVAL}s. Data dir: {DATA_DIR}. Device: {device}. Inference workers: {inference_workers()}")
+    log.info(
+        f"Poller started. Interval: {POLL_INTERVAL}s. Data dir: {DATA_DIR}. Device: {npu.describe()}. Inference workers: {inference_workers()}"
+    )
     migrated = False
     while True:
         try:
             log.info("Starting poll cycle...")
             async with state.scan_lock:
                 state.scan_cancel.clear()
-                await asyncio.to_thread(inference.run_scan, DATA_DIR, migrate=not migrated, cancel=state.scan_cancel)
+                await asyncio.to_thread(
+                    inference.run_scan,
+                    DATA_DIR,
+                    migrate=not migrated,
+                    cancel=state.scan_cancel,
+                )
                 migrated = True
             log.info("Poll cycle complete.")
         except Exception as e:
@@ -102,12 +109,16 @@ NO_CACHE_HEADERS = {"Cache-Control": "no-cache"}
 
 @app.get("/")
 async def root():
-    return FileResponse(str(BASE_DIR / "static" / "index.html"), headers=NO_CACHE_HEADERS)
+    return FileResponse(
+        str(BASE_DIR / "static" / "index.html"), headers=NO_CACHE_HEADERS
+    )
 
 
 @app.get("/accuracy.html")
 async def accuracy_page():
-    return FileResponse(str(BASE_DIR / "static" / "accuracy.html"), headers=NO_CACHE_HEADERS)
+    return FileResponse(
+        str(BASE_DIR / "static" / "accuracy.html"), headers=NO_CACHE_HEADERS
+    )
 
 
 if __name__ == "__main__":
