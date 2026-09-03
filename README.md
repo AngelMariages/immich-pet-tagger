@@ -210,13 +210,15 @@ After that, the background poller runs every hour and tags new photos automatica
 | `THRESHOLD_FALLBACK` | same as `THRESHOLD` | Min confidence (0–1) to tag a photo when YOLO found nothing and the whole image was embedded instead of a crop. Defaults to `THRESHOLD`'s value, so it does nothing unless set explicitly. Worth raising above `THRESHOLD`: the tagging accuracy tool has consistently measured this whole-image fallback as a noisier signal than a real crop, a separate, stricter threshold trades a bit of recall on fallback matches for meaningfully fewer false positives. |
 | `YOLO_CONF` | `0.25` (`0.2` in docker-compose.yml) | Min YOLO detection confidence (0–1) to count as a real crop. Lower catches more (small, turned-away, or partially visible pets) but crops get noisier. Below this, tagging falls back to embedding the whole photo instead of a crop. |
 | `IOU_THRESHOLD` | `0.7` | YOLO's NMS IoU threshold (0–1). Overlapping detections whose boxes overlap more than this fraction are merged into one. Lower this if two cuddling/overlapping pets in the same photo are being collapsed into a single detection. |
+| `BACKEND` | *(auto)* | Inference backend: `cuda`, `rknn` or `cpu`. Detected automatically, set it to pin a choice, e.g. `cpu` on a Rockchip board to leave the NPU free for something else. |
+| `RKNN_SOC` | *(auto)* | Rockchip SoC to load models for (e.g. `rk3588`). Read from the device tree when visible, which in a container it usually is not, so set it if model loading complains that it cannot tell. See [Rockchip NPU](#rockchip-npu). |
 | `LONG_REQUEST_TIMEOUT` | `120` | Max seconds for CPU-heavy UI requests (Find missed, Find candidates, Find references). Responses stream keepalive bytes so browsers do not drop idle connections. |
 
 ---
 
 ## GPU support
 
-The default setup runs on CPU and requires no extra configuration. A GPU makes scans significantly faster but requires additional setup. Pre-built images are published for CPU (AMD64 and ARM64), NVIDIA (AMD64), and AMD/ROCm (AMD64).
+The default setup runs on CPU and requires no extra configuration. A GPU makes scans significantly faster but requires additional setup. Pre-built images are published for CPU (AMD64 and ARM64), NVIDIA (AMD64), AMD/ROCm (AMD64), and Rockchip NPU (ARM64).
 
 **CPU (default):** no changes needed.
 
@@ -251,6 +253,56 @@ driver: amdgpu
 ```
 
 CPU-only works fine for most home libraries. Expect roughly 10x slower processing compared to GPU.
+
+### Rockchip NPU
+
+Rockchip boards (RK3588 and friends) pair modest CPU cores with an NPU, and the `:rknn` image uses it for CLIP embeddings. Measured on an RK3588 with 32 GB RAM, embedding preview-sized photos through the full pipeline:
+
+| | photos/s | model load per scan |
+|---|---|---|
+| NPU, `GPU_WORKERS=3` | 10.4 | 1.1s |
+| CPU, `GPU_WORKERS=2` | 1.7 | 9.0s |
+
+That is 6x the throughput, and it leaves the CPU cores free for whatever else the machine does, which on a NAS usually matters as much. Embeddings match the CPU ones to a cosine of 0.99996, so a classifier trained on one backend works unchanged on the other and caches do not need rebuilding.
+
+Supported SoCs: RK3562, RK3566, RK3568, RK3576, RK3588.
+
+**1. Check the host.** You need a distribution with the Rockchip BSP kernel and the `rknpu` driver:
+
+```bash
+$ ls /dev/dri
+by-path  card0  renderD128  renderD129   # renderD129 is the NPU
+$ sudo cat /sys/kernel/debug/rknpu/version
+RKNPU driver: v0.9.8   # v0.9.2 or later
+```
+
+**2. Configure `docker-compose.yml`:** use the `:rknn` tag, uncomment the `devices:` and `security_opt:` block, and set `GPU_WORKERS=3` on an RK3588 (one per NPU core; use `1` on single-core SoCs like the RK3566). Each worker holds its own copy of the model, around 180 MB.
+
+```yaml
+image: ghcr.io/tedornitier/immich-pet-tagger:rknn
+```
+
+**3. Build the model.** The NPU cannot run PyTorch models, so CLIP has to be compiled for your specific SoC first. This is not shipped in the image because it depends on which CLIP model you configured and which board you have:
+
+```bash
+# export the configured CLIP model to ONNX (downloads the weights on first run)
+docker compose exec immich-pet-tagger python /app/rknn_clip.py export
+
+# build it for your SoC (a separate image: Rockchip's converter pins numpy 1.x and torch 2.4)
+docker build -t rknn-convert tools/rknn
+docker run --rm -v ./data:/data rknn-convert /data/rknn/clip_ViT_B_16_openai.onnx rk3588
+```
+
+The converter takes a couple of minutes, writes a ~180 MB `.rknn` next to the ONNX, and checks it against the ONNX it came from before exiting. Both steps run on the board itself; an x86 machine works too. Repeat them after changing `CLIP_MODEL_NAME`, and delete the ONNX afterwards if you want the 330 MB back.
+
+To confirm the NPU is actually being used, `docker compose logs` shows `Device: rknn (rk3588)` when the poller starts, and these two report on a folder of photos:
+
+```bash
+docker compose exec immich-pet-tagger python /app/rknn_clip.py check /photos   # NPU vs CPU embeddings
+docker compose exec immich-pet-tagger python /app/rknn_clip.py bench /photos   # throughput
+```
+
+If the NPU is not picked up, `python /app/npu.py` prints what the container can see. YOLO detection still runs on the CPU.
 
 ---
 
