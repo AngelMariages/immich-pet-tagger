@@ -68,12 +68,17 @@ def export(model_name: str, input_size: int) -> Path:
     needs when it loads the built model back.
 
     Batch 1 and opset 19 are what rknn-toolkit2 accepts; simplify is off so the
-    export needs nothing beyond the onnx package. Ultralytics embeds its metadata
-    in the ONNX itself, so it is copied out to the metadata.yaml its RKNN backend
-    looks for beside the model."""
+    export needs nothing beyond the onnx package.
+
+    Ultralytics embeds its metadata in the ONNX as protobuf string entries, and
+    those are read back with onnx directly rather than through its own helpers:
+    requirements.txt allows any ultralytics >=8.0.0, and the module those helpers
+    live in moved in 8.4. Every value is already a string, which is the form
+    Ultralytics parses when it loads the model, so writing them straight out as
+    YAML round-trips exactly."""
+    import onnx
+    import yaml
     from ultralytics import YOLO
-    from ultralytics.nn.backends.base import BaseBackend
-    from ultralytics.utils import YAML
 
     target = model_dir(model_name)
     target.mkdir(parents=True, exist_ok=True)
@@ -85,7 +90,10 @@ def export(model_name: str, input_size: int) -> Path:
     onnx_path = target / exported.name
     exported.replace(onnx_path)
 
-    YAML.save(target / "metadata.yaml", BaseBackend.read_metadata(onnx_path))
+    metadata = {p.key: p.value for p in onnx.load(onnx_path).metadata_props}
+    if not metadata:
+        raise RuntimeError(f"{onnx_path} carries no Ultralytics metadata; its RKNN backend needs it.")
+    (target / "metadata.yaml").write_text(yaml.safe_dump(metadata, sort_keys=False))
     _sidecar(model_name).write_text(json.dumps({
         "model": model_name,
         "input_size": input_size,
