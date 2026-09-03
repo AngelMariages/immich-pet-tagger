@@ -211,7 +211,7 @@ After that, the background poller runs every hour and tags new photos automatica
 | `YOLO_CONF` | `0.25` (`0.2` in docker-compose.yml) | Min YOLO detection confidence (0–1) to count as a real crop. Lower catches more (small, turned-away, or partially visible pets) but crops get noisier. Below this, tagging falls back to embedding the whole photo instead of a crop. |
 | `IOU_THRESHOLD` | `0.7` | YOLO's NMS IoU threshold (0–1). Overlapping detections whose boxes overlap more than this fraction are merged into one. Lower this if two cuddling/overlapping pets in the same photo are being collapsed into a single detection. |
 | `BACKEND` | *(auto)* | Inference backend: `cuda`, `rknn` or `cpu`. Detected automatically, set it to pin a choice, e.g. `cpu` on a Rockchip board to leave the NPU free for something else. |
-| `RKNN_SOC` | *(auto)* | Rockchip SoC to load models for (e.g. `rk3588`). Read from the device tree when visible, which in a container it usually is not, so set it if model loading complains that it cannot tell. See [Rockchip NPU](#rockchip-npu). |
+| `RKNN_SOC` | *(auto)* | Rockchip SoC whose models to load (e.g. `rk3588`). Read from the device tree when visible, so set it if model loading reports it cannot tell. It only chooses the model file: the RKNPU runtime reads the device tree itself regardless, so it is not a way to avoid `systempaths=unconfined`. See [Rockchip NPU](#rockchip-npu). |
 | `LONG_REQUEST_TIMEOUT` | `120` | Max seconds for CPU-heavy UI requests (Find missed, Find candidates, Find references). Responses stream keepalive bytes so browsers do not drop idle connections. |
 
 ---
@@ -279,6 +279,8 @@ RKNPU driver: v0.9.8   # v0.9.2 or later
 ```
 
 **2. Configure `docker-compose.yml`:** use the `:rknn` tag, uncomment the `devices:` and `security_opt:` block, and set `GPU_WORKERS=3` on an RK3588 (one per NPU core; use `1` on single-core SoCs like the RK3566). Each worker holds its own copy of the model, around 180 MB.
+
+Both `devices: /dev/dri` and `security_opt: systempaths=unconfined` are required. The RKNPU runtime reads `/proc/device-tree/compatible` when it starts and refuses to run without it, and that path is a symlink into `/sys/firmware`, which Docker masks by default. Without the unmask, every worker fails with `Catch exception when init runtime`.
 
 ```yaml
 image: ghcr.io/tedornitier/immich-pet-tagger:rknn
