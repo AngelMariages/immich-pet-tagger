@@ -163,3 +163,23 @@ def test_encode_rejects_a_zero_vector_instead_of_dividing_by_zero(model_dir, fak
     encoder = rknn_clip.Encoder("ViT-B-16", "openai", soc="rk3588")
     fake_rknnlite.instances[0].output = [np.zeros((1, 2), dtype=np.float32)]
     assert encoder.encode(Image.new("RGB", (300, 300))) is None
+
+
+# ---------------------------------------------------------------------------
+# CLI argument handling
+# ---------------------------------------------------------------------------
+
+def test_image_paths_expands_a_directory(tmp_path):
+    for name in ("b.jpg", "a.png", "notes.txt"):
+        (tmp_path / name).touch()
+    assert rknn_clip.image_paths([str(tmp_path)]) == [str(tmp_path / "a.png"), str(tmp_path / "b.jpg")]
+
+
+def test_image_paths_passes_files_through(tmp_path):
+    photo = tmp_path / "one.jpg"
+    photo.touch()
+    assert rknn_clip.image_paths([str(photo)]) == [str(photo)]
+
+
+def test_image_paths_of_an_empty_directory_is_empty(tmp_path):
+    assert rknn_clip.image_paths([str(tmp_path)]) == []
