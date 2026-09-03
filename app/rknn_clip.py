@@ -23,7 +23,6 @@ Two things are worth knowing when reading this:
 
 import json
 import logging
-import os
 import re
 import sys
 import time
@@ -36,8 +35,7 @@ import npu
 
 log = logging.getLogger("rknn_clip")
 
-DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
-MODEL_DIR = DATA_DIR / "rknn"
+MODEL_DIR = npu.MODEL_DIR
 
 # Below this, the NPU is not reproducing the PyTorch embeddings closely enough for
 # a classifier trained on one to be trusted on the other. Chosen as a smoke-test

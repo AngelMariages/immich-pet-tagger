@@ -256,7 +256,7 @@ CPU-only works fine for most home libraries. Expect roughly 10x slower processin
 
 ### Rockchip NPU
 
-Rockchip boards (RK3588 and friends) pair modest CPU cores with an NPU, and the `:rknn` image uses it for CLIP embeddings. Measured on an RK3588 with 32 GB RAM, embedding preview-sized photos through the full pipeline:
+Rockchip boards (RK3588 and friends) pair modest CPU cores with an NPU, and the `:rknn` image uses it for both YOLO detection and CLIP embeddings. Measured on an RK3588 with 32 GB RAM, embedding preview-sized photos through the full pipeline:
 
 | | photos/s | model load per scan |
 |---|---|---|
@@ -282,18 +282,20 @@ RKNPU driver: v0.9.8   # v0.9.2 or later
 image: ghcr.io/tedornitier/immich-pet-tagger:rknn
 ```
 
-**3. Build the model.** The NPU cannot run PyTorch models, so CLIP has to be compiled for your specific SoC first. This is not shipped in the image because it depends on which CLIP model you configured and which board you have:
+**3. Build the models.** The NPU cannot run PyTorch models, so CLIP and YOLO have to be compiled for your specific SoC first. They are not shipped in the image because they depend on which models you configured and which board you have:
 
 ```bash
-# export the configured CLIP model to ONNX (downloads the weights on first run)
+# export the configured models to ONNX (downloads the weights on first run)
 docker compose exec immich-pet-tagger python /app/rknn_clip.py export
+docker compose exec immich-pet-tagger python /app/rknn_yolo.py export
 
-# build it for your SoC (a separate image: Rockchip's converter pins numpy 1.x and torch 2.4)
+# build them for your SoC (a separate image: Rockchip's converter pins numpy 1.x and torch 2.4)
 docker build -t rknn-convert tools/rknn
 docker run --rm -v ./data:/data rknn-convert /data/rknn/clip_ViT_B_16_openai.onnx rk3588
+docker run --rm -v ./data:/data rknn-convert /data/rknn/yolov8n_rknn_model/yolov8n.onnx rk3588
 ```
 
-The converter takes a couple of minutes, writes a ~180 MB `.rknn` next to the ONNX, and checks it against the ONNX it came from before exiting. Both steps run on the board itself; an x86 machine works too. Repeat them after changing `CLIP_MODEL_NAME`, and delete the ONNX afterwards if you want the 330 MB back.
+Each build takes a couple of minutes, writes the `.rknn` next to its ONNX (~180 MB for CLIP, ~8 MB for YOLO), and checks it against the ONNX it came from before exiting. Both steps run on the board itself; an x86 machine works too. Repeat them after changing `CLIP_MODEL_NAME`, `YOLO_MODEL_NAME` or `YOLO_INPUT_SIZE`, and delete the ONNX files afterwards if you want the ~340 MB back.
 
 To confirm the NPU is actually being used, `docker compose logs` shows `Device: rknn (rk3588)` when the poller starts, and these two report on a folder of photos:
 
@@ -302,7 +304,7 @@ docker compose exec immich-pet-tagger python /app/rknn_clip.py check /photos   #
 docker compose exec immich-pet-tagger python /app/rknn_clip.py bench /photos   # throughput
 ```
 
-If the NPU is not picked up, `python /app/npu.py` prints what the container can see. YOLO detection still runs on the CPU.
+If the NPU is not picked up, `python /app/npu.py` prints what the container can see.
 
 ---
 

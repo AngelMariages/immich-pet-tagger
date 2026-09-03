@@ -23,6 +23,7 @@ def _stub_torch() -> None:
 
     torch.Tensor = _FakeTensor
     torch.stack = lambda tensors, **kw: _FakeTensor()
+    torch.from_numpy = lambda arr: arr  # detector preprocesses with numpy, then wraps
     sys.modules["torch"] = torch
     sys.modules["torch.cuda"] = types.ModuleType("torch.cuda")
 
