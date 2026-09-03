@@ -11,6 +11,8 @@ import numpy as np
 import torch
 from PIL import Image
 
+import npu
+
 log = logging.getLogger("detector")
 
 YOLO_BATCH_SIZE = int(os.environ.get("YOLO_BATCH_SIZE", 32))
@@ -76,11 +78,19 @@ def get_yolo_error() -> str | None:
 def _yolo_batch_loop(worker_id: int) -> None:
     global yolo_batch_total, yolo_batch_count, _yolo_load_error
     from ultralytics import YOLO
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    on_npu = npu.backend() == "rknn"
+    device = "rknn" if on_npu else ("cuda" if torch.cuda.is_available() else "cpu")
     log.info(f"YOLO worker {worker_id} loading on {device}...")
     try:
-        model = YOLO(YOLO_MODEL_NAME)
-        model.to(device)
+        if on_npu:
+            # Ultralytics loads .rknn models through its own backend, so everything
+            # downstream (box decoding, NMS, the Results objects read below) is the
+            # same code the CPU and CUDA paths run.
+            import rknn_yolo
+            model = YOLO(rknn_yolo.model_path(YOLO_MODEL_NAME, YOLO_INPUT_SIZE), task="detect")
+        else:
+            model = YOLO(YOLO_MODEL_NAME)
+            model.to(device)
     except Exception as e:
         _yolo_load_error = str(e)
         log.error(
@@ -97,9 +107,12 @@ def _yolo_batch_loop(worker_id: int) -> None:
         first = _yolo_queue.get()
         if first is _YOLO_STOP:
             break
+        # An .rknn model has its batch size fixed when it is built, and an NPU has
+        # no batching win to give, so on that backend every request goes alone.
+        batch_limit = 1 if on_npu else YOLO_BATCH_SIZE
         batch = [first]
         try:
-            while len(batch) < YOLO_BATCH_SIZE:
+            while len(batch) < batch_limit:
                 batch.append(_yolo_queue.get_nowait())
         except queue.Empty:
             pass

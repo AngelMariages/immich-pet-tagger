@@ -35,6 +35,10 @@ BACKEND = os.environ.get("BACKEND", "auto").lower()
 SUPPORTED_SOCS = {"rk3562", "rk3566", "rk3568", "rk3576", "rk3588"}
 _SOC_ALIASES = {"rk3588s": "rk3588"}
 
+# Where converted .rknn models live, on the /data volume so they survive an image
+# upgrade: they are built per SoC and per configured model, not shipped in the image.
+MODEL_DIR = Path(os.environ.get("DATA_DIR", "/data")) / "rknn"
+
 _DEVICE_TREE = Path("/proc/device-tree/compatible")
 
 # The SoC name is only published in the device tree, and a container usually
