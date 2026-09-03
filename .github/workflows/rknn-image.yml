@@ -1,0 +1,83 @@
+# Builds the Rockchip NPU image on every push to this branch and publishes it to
+# this repository's GHCR package, for pulling straight onto the board:
+#
+#   docker login ghcr.io -u <user>            # a token with read:packages
+#   docker pull ghcr.io/angelmariages/immich-pet-tagger:rknn
+#
+# Separate from release.yml, which builds all four upstream variants and only on
+# a version tag. This one only ever builds the arm64 RKNN image.
+name: rknn image
+
+on:
+  push:
+    branches: [rknn-publish]
+  workflow_dispatch:
+
+concurrency:
+  group: rknn-image-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # The image takes minutes to build and nothing in it runs at build time, so a
+  # broken import would otherwise be found by the board rather than by CI.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      # conftest stubs torch, open_clip and ultralytics, so installing them here
+      # would cost minutes for packages no test ever imports. Filtering the
+      # requirements file rather than listing the rest keeps the pins in one place.
+      - name: Install test dependencies
+        run: |
+          grep -vE '^(torch|open-clip-torch|ultralytics)' requirements.txt > requirements-ci.txt
+          pip install -r requirements-ci.txt -r requirements-dev.txt
+
+      - run: pytest
+
+  build:
+    needs: test
+    # Native arm64, free on public repositories. The image installs torch and the
+    # RKNPU wheels, which under QEMU turns a few minutes of pip into most of an
+    # hour, so this label is doing more work than it looks like.
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/metadata-action@v6
+        id: meta
+        with:
+          images: ghcr.io/${{ github.repository }}
+          # :rknn is what the README calls this variant, and the sha tag is what
+          # makes a rollback possible without rebuilding.
+          tags: |
+            type=raw,value=rknn
+            type=sha
+
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/arm64
+          build-args: RKNN=true
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Without this the torch wheel is downloaded and unpacked on every run.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
