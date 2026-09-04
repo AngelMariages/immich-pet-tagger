@@ -2,6 +2,7 @@
 Pre-processing (PIL→tensor) happens in caller threads; batch threads only run the GPU kernel."""
 
 import logging
+import math
 import os
 import queue
 import threading
@@ -133,9 +134,19 @@ def _yolo_batch_loop(worker_id: int) -> None:
                     if cls not in ANIMAL_CLASS_IDS:
                         continue
                     conf = float(box.conf[0])
+                    x1, y1, x2, y2 = box.xyxyn[0].tolist()
+                    # A NaN is never below a threshold, so an unusable box passes the
+                    # confidence filter and fails much later, wherever a caller turns it
+                    # into pixel coordinates. Drop it at the one place every caller's
+                    # boxes come from. Seen on the NPU, where the box branch is fp16.
+                    if not all(map(math.isfinite, (conf, x1, y1, x2, y2))):
+                        log.warning(
+                            f"YOLO worker {worker_id}: dropped a non-finite box, "
+                            f"conf={conf} xyxyn={(x1, y1, x2, y2)}"
+                        )
+                        continue
                     if conf < req.conf:
                         continue
-                    x1, y1, x2, y2 = box.xyxyn[0].tolist()
                     boxes.append((conf, x1, y1, x2, y2))
                 boxes.sort(reverse=True)
                 req.result = boxes  # (conf, x1, y1, x2, y2), highest confidence first

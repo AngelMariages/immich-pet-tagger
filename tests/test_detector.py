@@ -10,6 +10,13 @@ import torch
 import detector as det
 
 
+class _FakeBox:
+    def __init__(self, cls, conf, xyxyn):
+        self.cls = [cls]
+        self.conf = [conf]
+        self.xyxyn = [types.SimpleNamespace(tolist=lambda v=xyxyn: list(v))]
+
+
 class _FakeResult:
     boxes: list = []
 
@@ -89,3 +96,15 @@ def test_npu_path_runs_one_image_at_a_time(fake_yolo, monkeypatch):
     for t in threads:
         t.join(timeout=10)
     assert fake_yolo.batches and max(fake_yolo.batches) == 1
+
+
+def test_a_non_finite_box_never_reaches_the_caller(fake_yolo, monkeypatch):
+    """fp16 box decoding on the NPU can return NaN with a healthy confidence, and NaN
+    is not below any threshold, so the confidence filter alone would let it through."""
+    monkeypatch.setattr(det.npu, "backend", lambda: "cpu")
+    nan = float("nan")
+    monkeypatch.setattr(_FakeResult, "boxes", [
+        _FakeBox(16, 0.9, (nan, nan, nan, nan)),
+        _FakeBox(16, 0.8, (0.1, 0.1, 0.5, 0.5)),
+    ])
+    assert det.detect_animals(_FakeImage()) == [(0.8, 0.1, 0.1, 0.5, 0.5)]
