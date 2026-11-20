@@ -1,4 +1,5 @@
 """Tests for how the YOLO worker loads its model and sizes its batches."""
+
 import sys
 import threading
 import types
@@ -26,6 +27,7 @@ class _FakeYOLO:
 
     built: list = []
     batches: list = []
+    devices: list = []
 
     def __init__(self, model, task=None):
         self.model = model
@@ -34,6 +36,7 @@ class _FakeYOLO:
 
     def to(self, device):
         self.device = device
+        _FakeYOLO.devices.append(device)
         return self
 
     def __call__(self, stacked, **kwargs):
@@ -45,6 +48,7 @@ class _FakeYOLO:
 def fake_yolo(monkeypatch):
     _FakeYOLO.built.clear()
     _FakeYOLO.batches.clear()
+    _FakeYOLO.devices.clear()
     monkeypatch.setattr(sys.modules["ultralytics"], "YOLO", _FakeYOLO)
     monkeypatch.setattr(torch, "stack", lambda tensors, **kw: list(tensors))
     yield _FakeYOLO
@@ -80,6 +84,8 @@ def test_npu_path_loads_the_built_rknn_model(fake_yolo, monkeypatch):
     monkeypatch.setitem(sys.modules, "rknn_yolo", fake)
     _run_one()
     assert set(fake_yolo.built) == {("/data/rknn/yolov8n.pt_640.rknn", "detect")}
+    # "rknn" is not a torch device, so moving the model there fails at load time.
+    assert fake_yolo.devices == []
 
 
 def test_npu_path_runs_one_image_at_a_time(fake_yolo, monkeypatch):
@@ -103,8 +109,12 @@ def test_a_non_finite_box_never_reaches_the_caller(fake_yolo, monkeypatch):
     is not below any threshold, so the confidence filter alone would let it through."""
     monkeypatch.setattr(det.npu, "backend", lambda: "cpu")
     nan = float("nan")
-    monkeypatch.setattr(_FakeResult, "boxes", [
-        _FakeBox(16, 0.9, (nan, nan, nan, nan)),
-        _FakeBox(16, 0.8, (0.1, 0.1, 0.5, 0.5)),
-    ])
+    monkeypatch.setattr(
+        _FakeResult,
+        "boxes",
+        [
+            _FakeBox(16, 0.9, (nan, nan, nan, nan)),
+            _FakeBox(16, 0.8, (0.1, 0.1, 0.5, 0.5)),
+        ],
+    )
     assert det.detect_animals(_FakeImage()) == [(0.8, 0.1, 0.1, 0.5, 0.5)]

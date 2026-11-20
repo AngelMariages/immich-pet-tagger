@@ -103,7 +103,6 @@ def _yolo_batch_loop(worker_id: int) -> None:
             model = YOLO(
                 rknn_yolo.model_path(YOLO_MODEL_NAME, YOLO_INPUT_SIZE), task="detect"
             )
-            model.to(device)
         else:
             model = YOLO(YOLO_MODEL_NAME)
             with submit_lock(device):
