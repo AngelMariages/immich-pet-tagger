@@ -303,7 +303,7 @@ def bench(paths: list[str], runs: int = 3) -> int:
     are involved, which is the only way to see the effect of moving either one,
     and it runs through detector and embedder rather than calling either model
     directly, so the arrangement being measured is the one that ships:
-    SCAN_WORKERS threads preprocessing in parallel, feeding GPU_WORKERS workers.
+    SCAN_WORKERS threads preprocessing in parallel, feeding MODEL_WORKERS workers.
     Comparing backends is a matter of running it again with BACKEND=cpu.
 
     Photos are decoded and scaled to preview size first, outside the timed
@@ -344,7 +344,7 @@ def bench(paths: list[str], runs: int = 3) -> int:
 
     embeddings = sum(n for n, _ in results)
     crops = sum(c for _, c in results)
-    print(f"\nBackend {npu.describe()}, {emb.GPU_WORKERS} workers, {emb.SCAN_WORKERS} scan threads")
+    print(f"\nBackend {npu.describe()}, {emb.MODEL_WORKERS} workers, {emb.SCAN_WORKERS} scan threads")
     print(f"{len(work)} photos in {elapsed:.1f}s: {len(work) / elapsed:.2f} photos/s, {elapsed / len(work) * 1000:.0f} ms each")
     print(f"{crops} animal crops detected, {embeddings} embeddings computed")
     if not crops:

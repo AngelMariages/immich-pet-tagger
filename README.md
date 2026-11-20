@@ -258,8 +258,8 @@ Rockchip boards (RK3588 and friends) pair modest CPU cores with an NPU, and the 
 
 | | photos/s | crops found | model load per scan |
 |---|---|---|---|
-| NPU, `GPU_WORKERS=3` | 8.1 | 18 | 1.1s |
-| CPU, `GPU_WORKERS=3` | 1.6 | 18 | 9.0s |
+| NPU, `MODEL_WORKERS=3` | 8.1 | 18 | 1.1s |
+| CPU, `MODEL_WORKERS=3` | 1.6 | 18 | 9.0s |
 
 That is 5x the throughput on the same photos, and it leaves the CPU cores free for whatever else the machine does, which on a NAS usually matters as much. Embeddings alone (no detection) run about 6x faster.
 
@@ -276,7 +276,7 @@ $ sudo cat /sys/kernel/debug/rknpu/version
 RKNPU driver: v0.9.8   # v0.9.2 or later
 ```
 
-**2. Configure `docker-compose.yml`:** use the `:rknn` tag, uncomment the `devices:` and `security_opt:` block, and set `GPU_WORKERS=3` on an RK3588 (one per NPU core; use `1` on single-core SoCs like the RK3566). Each worker holds its own copy of the model, around 180 MB.
+**2. Configure `docker-compose.yml`:** use the `:rknn` tag, uncomment the `devices:` and `security_opt:` block, and set `MODEL_WORKERS=3` on an RK3588 (one per NPU core; use `1` on single-core SoCs like the RK3566). Each worker holds its own copy of the model, around 180 MB.
 
 Both `devices: /dev/dri` and `security_opt: systempaths=unconfined` are required. The RKNPU runtime reads `/proc/device-tree/compatible` when it starts and refuses to run without it, and that path is a symlink into `/sys/firmware`, which Docker masks by default. Without the unmask, every worker fails with `Catch exception when init runtime`.
 

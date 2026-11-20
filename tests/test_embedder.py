@@ -52,7 +52,7 @@ def test_embed_image_goes_through_the_npu_encoder(npu_backend):
 
 def test_each_worker_gets_its_own_encoder(npu_backend, monkeypatch):
     """RKNNLite cannot be shared between threads, so one Encoder per worker."""
-    monkeypatch.setattr(emb, "GPU_WORKERS", 3)
+    monkeypatch.setattr(emb, "MODEL_WORKERS", 3)
     emb.start_workers()
     emb.wait_for_ready(timeout=10)
     assert len(npu_backend.instances) == 3
